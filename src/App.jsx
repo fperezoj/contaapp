@@ -197,7 +197,7 @@ const Inp   = ({label,...p})=><Field label={label}><input style={S.input} {...p}
 const Sel   = ({label,options,...p})=><Field label={label}><select style={S.select} {...p}>{options.map(o=>typeof o==="string"?<option key={o}>{o}</option>:<option key={o.v} value={o.v}>{o.l}</option>)}</select></Field>;
 const Btn   = ({children,onClick,v="primary",sm,disabled,style})=>{
   const styles={primary:S.btn(C.navy,C.gold),gold:S.btn(C.gold,C.navy),outline:S.btn("transparent",C.navy,C.border),danger:S.btn("transparent",C.danger,C.danger)};
-  return <button style={{...styles[v],..( sm?{padding:"6px 12px",fontSize:9.5}:{}),..( disabled?{opacity:.45,cursor:"default"}:{}),..( style||{})}} onClick={onClick} disabled={disabled}>{children}</button>;
+  return <button style={{...styles[v],...(sm?{padding:"6px 12px",fontSize:9.5}:{}),...(disabled?{opacity:.45,cursor:"default"}:{}),...(style||{})}} onClick={onClick} disabled={disabled}>{children}</button>;
 };
 const Msg   = ({ok,children})=>children?<div style={S.alert(ok)}>{children}</div>:null;
 
@@ -340,7 +340,7 @@ function NewEntryTab({accounts,entries,setEntries,userId}){
 
   const upd=(id,f,v)=>setRows(rs=>rs.map(r=>r.id===id?{...r,[f]:v}:r));
 
-  function submit(){
+  async function submit(){
     setErr(""); setOk("");
     if(!date) return setErr("Fecha obligatoria.");
     if(!desc.trim()) return setErr("Descripción obligatoria.");
@@ -702,7 +702,7 @@ function LiabilityForm({onSave,onCancel,initial}){
     totalCuota:customRows.reduce((s,r)=>s+r.cuota,0),
   },[customRows,f.system]);
 
-  function submit(){
+  async function submit(){
     setErr("");
     if(!f.name.trim()) return setErr("Nombre obligatorio.");
     const amt=parseFloat(f.originalAmount); if(!amt||amt<=0) return setErr("Monto inválido.");
@@ -954,6 +954,16 @@ function InvestmentsSection({rates,userId}){
     const mk2={...mkt};delete mk2[id];setMkt(mk2);lsSave("ac_inv_market",mk2);
     if(sel?.id===id){setSel(null);setView("list");}
   }
+  if(view==="newInst"||view==="editInst") return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>{view==="editInst"?"Editar":"Nuevo"} Instrumento</span></div><div style={S.cBody}>
+    {err&&<Msg>{err}</Msg>}
+    <div style={{...S.g3,marginBottom:14}}><Inp label="Nombre *" placeholder="Apple Inc." value={iF.name} onChange={e=>setIF(f=>({...f,name:e.target.value}))}/><Inp label="Ticker" placeholder="AAPL" value={iF.ticker} onChange={e=>setIF(f=>({...f,ticker:e.target.value.toUpperCase()}))}/><Sel label="Tipo" options={INV_TYPES} value={iF.type} onChange={e=>setIF(f=>({...f,type:e.target.value}))}/></div>
+    <div style={{...S.g3,marginBottom:14}}><Sel label="Moneda" options={CURRENCIES} value={iF.currency} onChange={e=>setIF(f=>({...f,currency:e.target.value}))}/><Inp label="ISIN" placeholder="US0378331005" value={iF.isin} onChange={e=>setIF(f=>({...f,isin:e.target.value.toUpperCase()}))}/><Inp label="Custodio / Broker" value={iF.custodian} onChange={e=>setIF(f=>({...f,custodian:e.target.value}))}/></div>
+    <Field label="Notas"><textarea style={S.textarea} value={iF.notes} onChange={e=>setIF(f=>({...f,notes:e.target.value}))}/></Field>
+    <div style={{display:"flex",gap:10,marginTop:14}}><Btn onClick={saveInst}>Guardar</Btn><Btn v="outline" onClick={()=>{setView("list");setSel(null);setIF(eI);}}>Cancelar</Btn></div>
+  </div></div>;
+
+  if(view==="move"){ const si=insts.find(x=>x.id===mF.instrumentId); const isIn=mF.type==="compra"||mF.type==="dividendo"||mF.type==="cupon";
+    return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>Registrar Movimiento</span></div><div style={S.cBody}>
       {err&&<Msg>{err}</Msg>}
       <div style={{...S.g3,marginBottom:14}}>
         <Field label="Instrumento *"><select style={S.select} value={mF.instrumentId} onChange={e=>setMF(f=>({...f,instrumentId:e.target.value}))}><option value="">Seleccionar…</option>{insts.map(i=><option key={i.id} value={i.id}>{i.ticker?`${i.ticker} — `:""}{i.name} ({i.currency})</option>)}</select></Field>
@@ -974,6 +984,7 @@ function InvestmentsSection({rates,userId}){
       <Inp label="Referencia" value={mF.ref} onChange={e=>setMF(f=>({...f,ref:e.target.value}))}/>
       <div style={{display:"flex",gap:10,marginTop:14}}><Btn onClick={saveMov}>Guardar</Btn><Btn v="outline" onClick={()=>setView(sel?"detail":"list")}>Cancelar</Btn></div>
     </div></div>; }
+
 
   if(view==="market") return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>Precio de Mercado</span></div><div style={S.cBody}>
     {err&&<Msg>{err}</Msg>}
@@ -1143,10 +1154,44 @@ function InventorySection({rates,userId}){
     const mk2={...mkt};delete mk2[id];setMkt(mk2);lsSave("ac_inv_mktprice",mk2);
     if(sel?.id===id){setSel(null);setView("list");}
   }
+  if(view==="newProd") return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>Nuevo Producto</span></div><div style={S.cBody}>
+    {err&&<Msg>{err}</Msg>}
+    <div style={{...S.g4,marginBottom:14}}><Inp label="Código *" placeholder="PROD-001" value={pF.code} onChange={e=>setPF(f=>({...f,code:e.target.value}))}/><Inp label="Nombre *" value={pF.name} onChange={e=>setPF(f=>({...f,name:e.target.value}))}/><Inp label="Unidad" placeholder="unidad, kg, litro" value={pF.unit} onChange={e=>setPF(f=>({...f,unit:e.target.value}))}/><Sel label="Moneda" options={CURRENCIES} value={pF.currency} onChange={e=>setPF(f=>({...f,currency:e.target.value}))}/></div>
+    <Field label="Notas"><textarea style={S.textarea} value={pF.notes} onChange={e=>setPF(f=>({...f,notes:e.target.value}))}/></Field>
+    <div style={{display:"flex",gap:10,marginTop:14}}><Btn onClick={saveProd}>Crear</Btn><Btn v="outline" onClick={()=>{setView("list");setPF(eP);}}>Cancelar</Btn></div>
+  </div></div>;
+
+  if(view==="move"){ const sp=products.find(x=>x.id===mF.productId);const isIn=mF.type==="compra"||mF.type==="entrada";
+    return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>Registrar Movimiento</span></div><div style={S.cBody}>
+      {err&&<Msg>{err}</Msg>}
+      <div style={{...S.g3,marginBottom:14}}>
+        <Field label="Producto *"><select style={S.select} value={mF.productId} onChange={e=>setMF(f=>({...f,productId:e.target.value}))}><option value="">Seleccionar…</option>{products.map(p=><option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}</select></Field>
+        <Sel label="Tipo *" options={[{v:"compra",l:"Compra"},{v:"venta",l:"Venta"},{v:"entrada",l:"Entrada (ajuste)"},{v:"salida",l:"Salida (ajuste)"}]} value={mF.type} onChange={e=>setMF(f=>({...f,type:e.target.value}))}/>
+        <Inp label="Fecha *" type="date" value={mF.date} onChange={e=>setMF(f=>({...f,date:e.target.value}))}/>
+      </div>
+      <div style={{...S.g4,marginBottom:14}}>
+        <Inp label="Cantidad *" type="number" min="0" step="any" value={mF.qty} onChange={e=>setMF(f=>({...f,qty:e.target.value}))}/>
+        <Inp label={isIn?"Costo unit. *":"Costo unit."} type="number" min="0" step="any" value={mF.unitCost} onChange={e=>setMF(f=>({...f,unitCost:e.target.value}))}/>
+        {!isIn&&<Inp label="Precio venta unit." type="number" min="0" step="any" value={mF.unitPrice} onChange={e=>setMF(f=>({...f,unitPrice:e.target.value}))}/>}
+        <Inp label="Referencia" value={mF.ref} onChange={e=>setMF(f=>({...f,ref:e.target.value}))}/>
+      </div>
+      {mF.productId&&!isIn&&<div style={{background:"#f8f6f1",borderRadius:3,padding:"9px 14px",marginBottom:12,fontSize:12.5}}>Stock: <b>{fmtNum(inventoryState[mF.productId]?.qty||0,4)}</b> — CP: <b>{fmtNum(inventoryState[mF.productId]?.avgCost||0,4)}</b></div>}
+      <div style={{display:"flex",gap:10,marginTop:14}}><Btn onClick={saveMov}>Guardar</Btn><Btn v="outline" onClick={()=>setView(sel?"detail":"list")}>Cancelar</Btn></div>
+    </div></div>; }
+
+  if(view==="market") return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>Precio de Mercado</span></div><div style={S.cBody}>
+    {err&&<Msg>{err}</Msg>}
+    <div style={{...S.g4,marginBottom:14}}>
+      <Field label="Producto *"><select style={S.select} value={mkF.productId} onChange={e=>setMkF(f=>({...f,productId:e.target.value}))}><option value="">Seleccionar…</option>{products.map(p=><option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}</select></Field>
+      <Inp label="Fecha *" type="date" value={mkF.date} onChange={e=>setMkF(f=>({...f,date:e.target.value}))}/>
+      <Inp label="Precio *" type="number" min="0" step="any" value={mkF.price} onChange={e=>setMkF(f=>({...f,price:e.target.value}))}/>
+      <Inp label="Fuente" value={mkF.source} onChange={e=>setMkF(f=>({...f,source:e.target.value}))}/>
+    </div>
     <div style={{display:"flex",gap:10,marginTop:14}}><Btn onClick={saveMk}>Guardar</Btn><Btn v="outline" onClick={()=>setView(sel?"detail":"list")}>Cancelar</Btn></div>
   </div></div>;
 
-  if(view==="detail"&&sel){ const p=products.find(x=>x.id===sel.id)||sel,st=inventoryState[p.id]||{},mk2=latestMkt(p.id),mktH=mkt[p.id]||[],pMovs=movs.filter(m=>m.productId===p.id).sort((a,b)=>b.date.localeCompare(a.date)),unrl=mk2?(mk2.price-st.avgCost)*st.qty:null;
+
+    if(view==="detail"&&sel){ const p=products.find(x=>x.id===sel.id)||sel,st=inventoryState[p.id]||{},mk2=latestMkt(p.id),mktH=mkt[p.id]||[],pMovs=movs.filter(m=>m.productId===p.id).sort((a,b)=>b.date.localeCompare(a.date)),unrl=mk2?(mk2.price-st.avgCost)*st.qty:null;
     return <div>
       <div style={{display:"flex",gap:10,marginBottom:16}}><Btn v="outline" onClick={()=>setView("list")}>← Volver</Btn><Btn onClick={()=>{setMF({...eM,productId:p.id});setView("move");}}>+ Movimiento</Btn><Btn v="gold" onClick={()=>{setMkF({...eMk,productId:p.id});setView("market");}}>📈 Precio mercado</Btn><Btn v="danger" onClick={()=>delProd(p.id)}>Eliminar</Btn></div>
       <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>{p.code} — {p.name}</span><span style={{color:"#94a3b8",fontSize:11}}>{p.unit} · {p.currency}</span></div>
@@ -1262,11 +1307,17 @@ function FixedAssetsSection({rates,userId}){
     const u=assets.filter(a=>a.id!==id); setAssets(u); dbDelete("ac_fixed_assets",userId,id,"ac_fa",u);
     if(sel?.id===id){setSel(null);setView("list");}
   }
+  if(view==="new"||view==="edit") return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>{view==="edit"?"Editar":"Nuevo"} Activo Fijo</span></div><div style={S.cBody}>
+    {err&&<Msg>{err}</Msg>}
+    <div style={{...S.g3,marginBottom:14}}><Inp label="Nombre *" placeholder="Camión Volvo FH16" value={aF.name} onChange={e=>setAF(f=>({...f,name:e.target.value}))}/><Inp label="Código" placeholder="AF-001" value={aF.code} onChange={e=>setAF(f=>({...f,code:e.target.value}))}/><Inp label="Categoría" placeholder="Vehículo, Maquinaria…" value={aF.category} onChange={e=>setAF(f=>({...f,category:e.target.value}))}/></div>
+    <div style={{...S.g4,marginBottom:14}}><Sel label="Moneda" options={CURRENCIES} value={aF.currency} onChange={e=>setAF(f=>({...f,currency:e.target.value}))}/><Inp label="Costo adquisición *" type="number" min="0" value={aF.acquisitionCost} onChange={e=>setAF(f=>({...f,acquisitionCost:e.target.value}))}/><Inp label="Valor residual" type="number" min="0" value={aF.residualValue} onChange={e=>setAF(f=>({...f,residualValue:e.target.value}))}/><Inp label="Fecha adquisición" type="date" value={aF.acquisitionDate} onChange={e=>setAF(f=>({...f,acquisitionDate:e.target.value}))}/></div>
+    <div style={{...S.g2,marginBottom:14}}><Inp label="Vida útil (años) *" type="number" min="1" value={aF.usefulLife} onChange={e=>setAF(f=>({...f,usefulLife:e.target.value}))}/><Sel label="Método" options={[{v:"lineal",l:"Lineal (cuota fija)"}]} value={aF.depreciationMethod} onChange={e=>setAF(f=>({...f,depreciationMethod:e.target.value}))}/></div>
     <Field label="Notas"><textarea style={S.textarea} value={aF.notes} onChange={e=>setAF(f=>({...f,notes:e.target.value}))}/></Field>
     <div style={{display:"flex",gap:10,marginTop:14}}><Btn onClick={saveAsset}>Guardar</Btn><Btn v="outline" onClick={()=>{setView("list");setSel(null);setAF(eA);}}>Cancelar</Btn></div>
   </div></div>;
 
-  if(view==="market") return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>Precio de Mercado — Activo Fijo</span></div><div style={S.cBody}>
+
+    if(view==="market") return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>Precio de Mercado — Activo Fijo</span></div><div style={S.cBody}>
     {err&&<Msg>{err}</Msg>}
     <div style={{...S.g4,marginBottom:14}}>
       <Field label="Activo *"><select style={S.select} value={mkF.assetId} onChange={e=>setMkF(f=>({...f,assetId:e.target.value}))}><option value="">Seleccionar…</option>{assets.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></Field>
