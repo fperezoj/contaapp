@@ -7,8 +7,8 @@ import { createClient } from "@supabase/supabase-js";
 
 // ── Supabase client ──
 const sb = createClient(
-  import.meta.env.SUPABASE_URL,
-  import.meta.env.SUPABASE_KEY
+  "https://nygxqsbmioxdghsnhbbx.supabase.co",
+  "sb_publishable_B3UedwiZBVXo6xz-4miDeQ_jJMSeNPC"
 );
 
 // ── Helpers ──
