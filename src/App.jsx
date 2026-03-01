@@ -7,8 +7,8 @@ import { createClient } from "@supabase/supabase-js";
 
 // ── Supabase client ──
 const sb = createClient(
-  "https://nygxqsbmioxdghsnhbbx.supabase.co",
-  "sb_publishable_B3UedwiZBVXo6xz-4miDeQ_jJMSeNPC"
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
 // ── Helpers ──
@@ -226,8 +226,8 @@ function DataTable({cols,rows,emptyMsg="Sin registros"}){
 // ════════════════════════════════════════════════════════════════
 function useFxRates() {
   const INDICATORS = { UF:"uf", USD:"dolar", EUR:"euro", UTM:"utm" };
-  const [rates, setRates]  = useState(()=>load("ac_fx",{UF:37500,USD:950,EUR:1030,UTM:65000}));
-  const [meta,  setMeta]   = useState(()=>load("ac_fx_meta",{date:null,loading:false,error:null}));
+  const [rates, setRates]  = useState(()=>lsLoad("ac_fx",{UF:37500,USD:950,EUR:1030,UTM:65000}));
+  const [meta,  setMeta]   = useState(()=>lsLoad("ac_fx_meta",{date:null,loading:false,error:null}));
 
   async function fetchRates() {
     setMeta(m=>({...m,loading:true,error:null}));
@@ -244,10 +244,10 @@ function useFxRates() {
     }
     if(anyOk){
       setRates(newRates);
-      save("ac_fx", newRates);
+      lsSave("ac_fx", newRates);
       const d = today();
       setMeta({date:d,loading:false,error:null});
-      save("ac_fx_meta",{date:d,loading:false,error:null});
+      lsSave("ac_fx_meta",{date:d,loading:false,error:null});
     } else {
       setMeta(m=>({...m,loading:false,error:"No se pudo conectar con mindicador.cl"}));
     }
@@ -255,7 +255,7 @@ function useFxRates() {
 
   // Auto-fetch once per day
   useEffect(()=>{
-    const lastDate = load("ac_fx_meta",{}).date;
+    const lastDate = lsLoad("ac_fx_meta",{}).date;
     if(lastDate !== today()) fetchRates();
   },[]);
 
@@ -1372,7 +1372,7 @@ export default function App(){
   const [accTab,setAccTab]=useState("new");
   const {rates,meta,fetchRates}=useFxRates();
 
-  // Shared accounting state — loaded from  on login
+  // Shared accounting state — loaded from Supabase on login
   const [accounts,setAccounts]=useState(()=>lsLoad("ac_accounts",DEFAULT_ACCOUNTS));
   const [entries, setEntries] =useState(()=>lsLoad("ac_entries",[]));
 
