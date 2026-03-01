@@ -7,8 +7,8 @@ import { createClient } from "@supabase/supabase-js";
 
 // ── Supabase client ──
 const sb = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
+  import.meta.env.SUPABASE_URL,
+  import.meta.env.SUPABASE_KEY
 );
 
 // ── Helpers ──
@@ -1372,7 +1372,7 @@ export default function App(){
   const [accTab,setAccTab]=useState("new");
   const {rates,meta,fetchRates}=useFxRates();
 
-  // Shared accounting state — loaded from Supabase on login
+  // Shared accounting state — loaded from  on login
   const [accounts,setAccounts]=useState(()=>lsLoad("ac_accounts",DEFAULT_ACCOUNTS));
   const [entries, setEntries] =useState(()=>lsLoad("ac_entries",[]));
 
