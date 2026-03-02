@@ -670,6 +670,7 @@ function ReportsTab({accounts,entries}){
             <option value="balance">Balance de Comprobación</option>
             <option value="results">Estado de Resultados</option>
             <option value="ledger">Libro Diario</option>
+            <option value="cuentasT">Cuentas T</option>
           </select>
         </div>
 
@@ -714,7 +715,7 @@ function ReportsTab({accounts,entries}){
         </>}
 
         {/* Libro diario: rango */}
-        {type==="ledger"&&<>
+        {(type==="ledger"||type==="cuentasT")&&<>
           <div style={{flex:"0 0 170px"}}><label style={S.label}>Desde</label>
             <select style={S.select} value={ldFrom} onChange={e=>setLdFrom(e.target.value)}>
               <option value="">Inicio</option>
@@ -839,6 +840,97 @@ function ReportsTab({accounts,entries}){
         </div>}
       </div></div>
     </div>}
+
+    {/* ── Cuentas T ── */}
+    {type==="cuentasT"&&(()=>{
+      // Build per-account movements from ldEntries
+      const tData={};
+      ldEntries.forEach(e=>{
+        e.rows.forEach(r=>{
+          if(!tData[r.account]) tData[r.account]={debit:[],credit:[]};
+          const line={date:e.date,desc:e.description,amount:r.debit||r.credit,counterparty:r.counterparty||""};
+          if(r.debit>0) tData[r.account].debit.push(line);
+          else if(r.credit>0) tData[r.account].credit.push(line);
+        });
+      });
+      const sortedAccs=Object.keys(tData).sort();
+      if(sortedAccs.length===0) return <div style={{...S.card,...S.empty}}><div style={{color:C.muted}}>Sin movimientos en el período</div></div>;
+      return <div>{sortedAccs.map(code=>{
+        const acc=accMap[code]||{name:code,type:"?"};
+        const {debit,credit}=tData[code];
+        const totD=debit.reduce((s,r)=>s+r.amount,0);
+        const totC=credit.reduce((s,r)=>s+r.amount,0);
+        const saldo=totD-totC;
+        const maxRows=Math.max(debit.length,credit.length);
+        return <div key={code} style={{...S.card,marginBottom:20}}>
+          {/* Header */}
+          <div style={{...S.cHead(),borderRadius:"4px 4px 0 0"}}>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              <code style={{fontSize:13,color:C.gold,fontWeight:700}}>{code}</code>
+              <span style={{...S.cTitle,fontSize:13}}>{acc.name}</span>
+              {acc.type&&acc.type!=="?"&&<span style={S.tag(acc.type)}>{acc.type}</span>}
+            </div>
+            <div style={{display:"flex",gap:20,fontSize:12}}>
+              <span style={{color:"#94a3b8"}}>Débitos: <b style={{color:"#fff"}}>{fmtCLP(totD)}</b></span>
+              <span style={{color:"#94a3b8"}}>Créditos: <b style={{color:"#fff"}}>{fmtCLP(totC)}</b></span>
+              <span style={{color:C.gold}}>Saldo: <b style={{color:saldo>=0?"#86efac":"#fca5a5"}}>{saldo>=0?"+":""}{fmtCLP(saldo)}</b></span>
+            </div>
+          </div>
+          {/* T table */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",borderBottom:`1px solid ${C.border}`}}>
+            {/* Debit header */}
+            <div style={{background:"#f0fdf4",padding:"7px 14px",borderRight:`1px solid ${C.border}`,borderBottom:`1px solid ${C.border}`}}>
+              <span style={{fontSize:10,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.green}}>DEBE</span>
+            </div>
+            {/* Credit header */}
+            <div style={{background:"#fef2f2",padding:"7px 14px",borderBottom:`1px solid ${C.border}`}}>
+              <span style={{fontSize:10,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.danger}}>HABER</span>
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr"}}>
+            {/* Debit column */}
+            <div style={{borderRight:`1px solid ${C.border}`}}>
+              {debit.length===0
+                ? <div style={{padding:"10px 14px",fontSize:12,color:C.muted,fontStyle:"italic"}}>Sin movimientos</div>
+                : debit.map((r,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",padding:"7px 14px",borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fafaf9":"#fff",gap:8}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:11.5,color:C.muted,fontFamily:"monospace",whiteSpace:"nowrap"}}>{fmtDate(r.date)}</div>
+                      <div style={{fontSize:12,color:C.navy,fontFamily:"'Georgia',serif",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:220}} title={r.desc}>{r.desc}</div>
+                      {r.counterparty&&<div style={{fontSize:10.5,color:C.muted,marginTop:1}}>{r.counterparty}</div>}
+                    </div>
+                    <div style={{fontWeight:700,fontSize:13,color:C.green,whiteSpace:"nowrap"}}>{fmtCLP(r.amount)}</div>
+                  </div>)
+              }
+              {debit.length>0&&<div style={{display:"flex",justifyContent:"flex-end",padding:"8px 14px",background:"#f0fdf4",borderTop:`2px solid ${C.navy}`}}>
+                <span style={{fontWeight:700,fontSize:13,color:C.green}}>{fmtCLP(totD)}</span>
+              </div>}
+            </div>
+            {/* Credit column */}
+            <div>
+              {credit.length===0
+                ? <div style={{padding:"10px 14px",fontSize:12,color:C.muted,fontStyle:"italic"}}>Sin movimientos</div>
+                : credit.map((r,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",padding:"7px 14px",borderBottom:`1px solid ${C.border}`,background:i%2===0?"#fafaf9":"#fff",gap:8}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:11.5,color:C.muted,fontFamily:"monospace",whiteSpace:"nowrap"}}>{fmtDate(r.date)}</div>
+                      <div style={{fontSize:12,color:C.navy,fontFamily:"'Georgia',serif",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:220}} title={r.desc}>{r.desc}</div>
+                      {r.counterparty&&<div style={{fontSize:10.5,color:C.muted,marginTop:1}}>{r.counterparty}</div>}
+                    </div>
+                    <div style={{fontWeight:700,fontSize:13,color:C.danger,whiteSpace:"nowrap"}}>{fmtCLP(r.amount)}</div>
+                  </div>)
+              }
+              {credit.length>0&&<div style={{display:"flex",justifyContent:"flex-end",padding:"8px 14px",background:"#fef2f2",borderTop:`2px solid ${C.navy}`}}>
+                <span style={{fontWeight:700,fontSize:13,color:C.danger}}>{fmtCLP(totC)}</span>
+              </div>}
+            </div>
+          </div>
+          {/* Saldo footer */}
+          <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:8,padding:"8px 16px",background:"#f8fafc",borderTop:`1px solid ${C.border}`}}>
+            <span style={{fontSize:10,letterSpacing:1,textTransform:"uppercase",color:C.muted}}>Saldo</span>
+            <span style={{fontWeight:700,fontSize:14,color:saldo>=0?C.green:C.danger}}>{saldo>=0?"+":""}{fmtCLP(saldo)}</span>
+          </div>
+        </div>;
+      })}</div>;
+    })()}
 
     {/* ── Libro Diario ── */}
     {type==="ledger"&&<div style={S.card}>
