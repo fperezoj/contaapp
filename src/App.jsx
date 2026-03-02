@@ -1154,9 +1154,171 @@ function AmortTable({liability,onToggle}){
 }
 
 
+
+// ════════════════════════════════════════════════════════════════
+//  REFINANCING FORM
+// ════════════════════════════════════════════════════════════════
+function RefinancingForm({liabilities, rates, onSave, onCancel}){
+  const [origId, setOrigId]   = useState("");
+  const [amountToRefi, setAmountToRefi] = useState(""); // capital a refinanciar del pasivo original
+  const [cashDiff, setCashDiff]   = useState("");       // diferencia de caja (+entrada / -salida)
+  const [cashAcc, setCashAcc]     = useState("1111");   // cuenta caja para diferencia
+  const [date, setDate]           = useState(today());
+  const [err, setErr]             = useState("");
+
+  const orig = liabilities.find(l=>l.id===origId)||null;
+
+  // Saldo pendiente del pasivo original
+  const origBalance = useMemo(()=>{
+    if(!orig) return 0;
+    const paid = (orig.amortTable||[]).filter(r=>r.paid).reduce((s,r)=>s+r.capital,0);
+    return orig.originalAmount - paid;
+  },[orig]);
+
+  // Monto a refinanciar: default = saldo total
+  const refiAmt = parseFloat(amountToRefi) || origBalance;
+  const cash    = parseFloat(cashDiff) || 0; // positive = cash in, negative = cash out
+
+  // New loan amount = refinanced capital ± cash difference
+  const newLoanAmt = refiAmt + cash;
+
+  function submit(){
+    setErr("");
+    if(!origId)            return setErr("Selecciona el pasivo a refinanciar.");
+    if(refiAmt<=0)         return setErr("Monto a refinanciar debe ser mayor a cero.");
+    if(refiAmt>origBalance+0.01) return setErr(`El monto (${fmtNum(refiAmt,2)}) supera el saldo pendiente (${fmtNum(origBalance,2)} ${orig.currency}).`);
+    if(newLoanAmt<=0)      return setErr("El monto del nuevo préstamo resultante debe ser positivo.");
+    onSave({ origId, refiAmt, cash, cashAcc, date, origBalance, orig, newLoanAmt });
+  }
+
+  const isPartial = refiAmt < origBalance - 0.01;
+
+  return <div style={S.card}>
+    <div style={S.cHead()}><span style={S.cTitle}>🔄 Refinanciamiento de Pasivo</span></div>
+    <div style={S.cBody}>
+      {err&&<Msg>{err}</Msg>}
+
+      {/* Step 1: select original liability */}
+      <div style={{...S.card,border:`1px solid ${C.gold}`,marginBottom:20}}>
+        <div style={{...S.cHead(C.navy),padding:"10px 16px"}}><span style={{...S.cTitle,fontSize:11}}>PASO 1 — Pasivo a refinanciar</span></div>
+        <div style={{padding:16}}>
+          <Field label="Pasivo original *">
+            <select style={S.select} value={origId} onChange={e=>setOrigId(e.target.value)}>
+              <option value="">Seleccionar pasivo…</option>
+              {liabilities.map(l=>{
+                const paid=(l.amortTable||[]).filter(r=>r.paid).reduce((s,r)=>s+r.capital,0);
+                const bal=l.originalAmount-paid;
+                return <option key={l.id} value={l.id}>{l.name} — Saldo: {fmtNum(bal,2)} {l.currency}</option>;
+              })}
+            </select>
+          </Field>
+          {orig&&<div style={{marginTop:12,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+            <div style={S.stat}><div style={S.sLbl}>Acreedor</div><div style={{fontFamily:"'Georgia',serif",fontWeight:700,fontSize:13}}>{orig.lender||"—"}</div></div>
+            <div style={S.stat}><div style={S.sLbl}>Saldo pendiente</div><div style={{fontFamily:"'Georgia',serif",fontWeight:700,fontSize:13,color:C.danger}}>{fmtNum(origBalance,2)} {orig.currency}</div></div>
+            <div style={S.stat}><div style={S.sLbl}>Cuotas restantes</div><div style={{fontFamily:"'Georgia',serif",fontWeight:700,fontSize:13}}>{(orig.amortTable||[]).filter(r=>!r.paid).length}</div></div>
+          </div>}
+          {orig&&<div style={{marginTop:14}}>
+            <label style={S.label}>Capital a refinanciar en {orig.currency} (dejar vacío = saldo total)</label>
+            <input style={{...S.input,maxWidth:200}} type="number" min="0" step="0.01"
+              placeholder={fmtNum(origBalance,2)}
+              value={amountToRefi} onChange={e=>setAmountToRefi(e.target.value)}/>
+            {isPartial&&<div style={{marginTop:6,background:"#fef9c3",border:"1px solid #f59e0b",borderRadius:3,padding:"7px 12px",fontSize:12,color:"#92400e"}}>
+              ⚠ Refinanciamiento parcial — quedará un saldo remanente de <b>{fmtNum(origBalance-refiAmt,2)} {orig.currency}</b> en el pasivo original.
+            </div>}
+          </div>}
+        </div>
+      </div>
+
+      {/* Step 2: cash difference */}
+      {orig&&<div style={{...S.card,border:`1px solid ${C.border}`,marginBottom:20}}>
+        <div style={{...S.cHead(C.navy),padding:"10px 16px"}}><span style={{...S.cTitle,fontSize:11}}>PASO 2 — Diferencia de caja (opcional)</span></div>
+        <div style={{padding:16}}>
+          <div style={{fontSize:12,color:C.muted,marginBottom:12}}>
+            Si el nuevo préstamo entrega más dinero del que se cancela, ingresa la diferencia como positivo (+). Si se paga una parte en caja para reducir la deuda, como negativo (−).
+          </div>
+          <div style={{display:"flex",gap:14,flexWrap:"wrap",alignItems:"flex-end"}}>
+            <div style={{flex:"0 0 200px"}}>
+              <label style={S.label}>Diferencia en {orig.currency} (+entrada / −salida)</label>
+              <input style={S.input} type="number" step="0.01" placeholder="0"
+                value={cashDiff} onChange={e=>setCashDiff(e.target.value)}/>
+            </div>
+            {cash!==0&&<div style={{flex:"0 0 200px"}}>
+              <label style={S.label}>Cuenta de caja</label>
+              <select style={S.select} value={cashAcc} onChange={e=>setCashAcc(e.target.value)}>
+                <option value="1111">1111 — Banco Consorcio</option>
+                <option value="1112">1112 — CCB</option>
+                <option value="1110">1110 — Banco Cuenta Corriente</option>
+                <option value="1100">1100 — Caja</option>
+              </select>
+            </div>}
+          </div>
+        </div>
+      </div>}
+
+      {/* Step 3: summary + date */}
+      {orig&&<div style={{...S.card,border:`1px solid ${C.border}`,marginBottom:20}}>
+        <div style={{...S.cHead(C.navy),padding:"10px 16px"}}><span style={{...S.cTitle,fontSize:11}}>PASO 3 — Resumen del asiento</span></div>
+        <div style={{padding:16}}>
+          <div style={{marginBottom:14,maxWidth:480}}>
+            <label style={S.label}>Fecha del asiento de refinanciamiento</label>
+            <input style={{...S.input,maxWidth:180}} type="date" value={date} onChange={e=>setDate(e.target.value)}/>
+          </div>
+          {/* Preview asiento */}
+          <div style={{background:"#f8f6f1",borderRadius:3,padding:"14px 16px"}}>
+            <div style={{fontSize:10,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.muted,marginBottom:10}}>Asiento que se generará</div>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12.5}}>
+              <thead><tr>
+                <th style={{...S.th,fontSize:9.5}}>Cuenta</th>
+                <th style={{...S.th,textAlign:"right",fontSize:9.5}}>Débito</th>
+                <th style={{...S.th,textAlign:"right",fontSize:9.5}}>Crédito</th>
+              </tr></thead>
+              <tbody>
+                <tr style={{background:"#fff"}}>
+                  <td style={S.td}><code style={{fontSize:11,color:C.muted}}>{orig.accountingCode||"2400"}</code> {orig.name} (cancela {fmtNum(refiAmt,2)} {orig.currency})</td>
+                  <td style={{...S.td,textAlign:"right",fontWeight:700,color:C.navy}}>{fmtNum(refiAmt,2)}</td>
+                  <td style={{...S.td,textAlign:"right",color:C.border}}>—</td>
+                </tr>
+                {cash>0&&<tr style={{background:"#fafaf9"}}>
+                  <td style={S.td}><code style={{fontSize:11,color:C.muted}}>{cashAcc}</code> Entrada de caja</td>
+                  <td style={{...S.td,textAlign:"right",fontWeight:700,color:C.navy}}>{fmtNum(cash,2)}</td>
+                  <td style={{...S.td,textAlign:"right",color:C.border}}>—</td>
+                </tr>}
+                <tr style={{background:"#fff"}}>
+                  <td style={S.td}><code style={{fontSize:11,color:C.muted}}>{orig.accountingCode||"2400"}</code> Nuevo préstamo ({fmtNum(newLoanAmt,2)} {orig.currency})</td>
+                  <td style={{...S.td,textAlign:"right",color:C.border}}>—</td>
+                  <td style={{...S.td,textAlign:"right",fontWeight:700,color:C.navy}}>{fmtNum(newLoanAmt,2)}</td>
+                </tr>
+                {cash<0&&<tr style={{background:"#fafaf9"}}>
+                  <td style={S.td}><code style={{fontSize:11,color:C.muted}}>{cashAcc}</code> Salida de caja</td>
+                  <td style={{...S.td,textAlign:"right",color:C.border}}>—</td>
+                  <td style={{...S.td,textAlign:"right",fontWeight:700,color:C.navy}}>{fmtNum(Math.abs(cash),2)}</td>
+                </tr>}
+              </tbody>
+              <tfoot><tr style={{background:C.navy}}>
+                <td style={{...S.td,color:C.gold,fontWeight:700,fontSize:10,letterSpacing:2,textTransform:"uppercase"}}>Total</td>
+                <td style={{...S.td,textAlign:"right",color:"#fff",fontWeight:700}}>{fmtNum(refiAmt+(cash>0?cash:0),2)}</td>
+                <td style={{...S.td,textAlign:"right",color:"#fff",fontWeight:700}}>{fmtNum(newLoanAmt+(cash<0?Math.abs(cash):0),2)}</td>
+              </tr></tfoot>
+            </table>
+            <div style={{marginTop:10,fontSize:11,color:C.muted}}>
+              A continuación podrás configurar el nuevo pasivo con sus condiciones (tasa, plazo, sistema).
+            </div>
+          </div>
+        </div>
+      </div>}
+
+      <div style={{display:"flex",gap:10,marginTop:4}}>
+        <Btn onClick={submit} disabled={!orig}>Continuar → Configurar nuevo pasivo</Btn>
+        <Btn v="outline" onClick={onCancel}>Cancelar</Btn>
+      </div>
+    </div>
+  </div>;
+}
+
 function LiabilitiesSection({rates,userId,entityId,accounts,entries,setEntries}){
   const [liabilities,setLiabilities]=useState(()=>lsLoad("ac_liabilities",[]));
   const [view,setView]=useState("list"); const [sel,setSel]=useState(null); const [msg,setMsg]=useState(null);
+  const [refiData,setRefiData]=useState(null); // holds {origId,refiAmt,cash,cashAcc,date,...} from RefinancingForm
 
   useEffect(()=>{ dbLoad("ac_liabilities", userId, entityId, "ac_liabilities",[]).then(setLiabilities); },[userId]);
 
@@ -1170,6 +1332,87 @@ function LiabilitiesSection({rates,userId,entityId,accounts,entries,setEntries})
     persist(u,l,null); setMsg({ok:true,text:`"${l.name}" guardado.`}); setView("list"); setTimeout(()=>setMsg(null),4000);
   }
   function del(id){ if(!confirm("¿Eliminar pasivo?")) return; const u=liabilities.filter(x=>x.id!==id); persist(u,null,id); if(sel?.id===id){setSel(null);setView("list");} }
+
+  async function handleRefiStep1(data){
+    // data = { origId, refiAmt, cash, cashAcc, date, origBalance, orig, newLoanAmt }
+    setRefiData(data);
+    setView("refi-new"); // go to LiabilityForm pre-filled with new loan amount
+  }
+
+  async function handleRefiSave(newLiab){
+    if(!refiData) return;
+    const {origId,refiAmt,cash,cashAcc,date,origBalance,orig} = refiData;
+
+    // 1. Update original liability: mark as partially/fully cancelled
+    const isPartial = refiAmt < origBalance - 0.01;
+    let updatedLiabilities;
+    if(isPartial){
+      // Reduce originalAmount to reflect remaining balance
+      const remaining = origBalance - refiAmt;
+      const updOrig = {...orig,
+        originalAmount: remaining,
+        amortTable: (orig.amortTable||[]).filter(r=>!r.paid).map((r,i,arr)=>({...r,
+          capital: parseFloat((r.capital * remaining / origBalance).toFixed(4)),
+          period: i+1,
+        })),
+        notes: (orig.notes?orig.notes+" | ":"") + `Refinanciado parcialmente ${fmtDate(date)}: ${fmtNum(refiAmt,2)} ${orig.currency} → ${newLiab.name}`
+      };
+      updatedLiabilities = liabilities.map(l=>l.id===origId?updOrig:l);
+      updatedLiabilities = [...updatedLiabilities, newLiab];
+      persist(updatedLiabilities, updOrig, null);
+      dbUpsert("ac_liabilities", userId, entityId, newLiab, "ac_liabilities", updatedLiabilities);
+    } else {
+      // Mark all remaining cuotas as paid (fully cancelled)
+      const updOrig = {...orig,
+        amortTable: (orig.amortTable||[]).map(r=>({...r,paid:true})),
+        notes: (orig.notes?orig.notes+" | ":"") + `Cancelado por refinanciamiento ${fmtDate(date)} → ${newLiab.name}`
+      };
+      updatedLiabilities = liabilities.map(l=>l.id===origId?updOrig:l);
+      updatedLiabilities = [...updatedLiabilities, newLiab];
+      persist(updatedLiabilities, updOrig, null);
+      dbUpsert("ac_liabilities", userId, entityId, newLiab, "ac_liabilities", updatedLiabilities);
+    }
+
+    // 2. Generate accounting entry
+    const origAccCode = orig.accountingCode || "2400";
+    const newAccCode  = newLiab.accountingCode || "2400";
+    const cur = orig.currency;
+    const ufRate = rates["UF"]||37500;
+    const toClp = v => cur==="CLP"?Math.round(v):cur==="UF"?Math.round(v*ufRate):cur==="USD"?Math.round(v*(rates["USD"]||950)):Math.round(v);
+    const refiCLP = toClp(refiAmt);
+    const cashCLP = toClp(Math.abs(cash));
+    const newCLP  = toClp(refiData.newLoanAmt);
+
+    const entryRows = [];
+    // Debit side: cancel original debt
+    entryRows.push({id:genId(), account:origAccCode, debit:refiCLP, credit:0, counterparty:orig.lender||""});
+    // Cash in (new loan > old debt)
+    if(cash>0) entryRows.push({id:genId(), account:cashAcc, debit:cashCLP, credit:0, counterparty:""});
+    // Credit side: new loan
+    entryRows.push({id:genId(), account:newAccCode, debit:0, credit:newCLP, counterparty:newLiab.lender||""});
+    // Cash out (new loan < old debt, client pays difference)
+    if(cash<0) entryRows.push({id:genId(), account:cashAcc, debit:0, credit:cashCLP, counterparty:""});
+
+    const totalD = entryRows.reduce((s,r)=>s+r.debit,0);
+    const totalC = entryRows.reduce((s,r)=>s+r.credit,0);
+    const currentEntries = lsLoad("ac_entries"+(entityId?":"+entityId:""),[]);
+    const n = currentEntries.length + 1;
+    const newEntry = {
+      id:genId(), number:n, date,
+      description:`Refinanciamiento: ${orig.name} → ${newLiab.name}`,
+      reference:"Auto-Refinanciamiento",
+      rows:entryRows, totalDebit:totalD, totalCredit:totalC,
+      createdAt:new Date().toISOString()
+    };
+    const updatedEntries = [...currentEntries, newEntry];
+    setEntries(updatedEntries);
+    await dbUpsertEntry(userId, entityId, newEntry, updatedEntries);
+
+    setRefiData(null);
+    setView("list");
+    setMsg({ok:true, text:`✓ Refinanciamiento registrado. Asiento N°${n} generado.`});
+    setTimeout(()=>setMsg(null),6000);
+  }
 
   async function togglePaid(lid,idx){
     const liability=liabilities.find(l=>l.id===lid);
@@ -1271,6 +1514,17 @@ function LiabilitiesSection({rates,userId,entityId,accounts,entries,setEntries})
 
   if(view==="new") return <LiabilityForm onSave={handleSave} onCancel={()=>setView("list")}/>;
   if(view==="edit"&&sel) return <LiabilityForm onSave={handleSave} onCancel={()=>setView("detail")} initial={sel}/>;
+  if(view==="refi") return <RefinancingForm liabilities={liabilities} rates={rates} onSave={handleRefiStep1} onCancel={()=>setView("list")}/>;
+  if(view==="refi-new"&&refiData) return <div>
+    <div style={{background:"#ede9fe",border:"1px solid #7c3aed",borderRadius:4,padding:"10px 16px",marginBottom:16,fontSize:12,color:"#4c1d95"}}>
+      🔄 Configurando nuevo pasivo del refinanciamiento — Monto sugerido: <b>{fmtNum(refiData.newLoanAmt,2)} {refiData.orig.currency}</b>
+    </div>
+    <LiabilityForm
+      onSave={handleRefiSave}
+      onCancel={()=>{setRefiData(null);setView("list");}}
+      initial={{name:`Refinanciamiento ${refiData.orig.name}`,lender:refiData.orig.lender||"",currency:refiData.orig.currency,originalAmount:String(refiData.newLoanAmt),annualRate:"",months:"",startDate:refiData.date,system:"frances",notes:"",tags:"",accountingCode:refiData.orig.accountingCode||"2400"}}
+    />
+  </div>;
   if(view==="detail"&&sel){
     const l=liabilities.find(x=>x.id===sel.id)||sel;
     return <div>
@@ -1290,7 +1544,10 @@ function LiabilitiesSection({rates,userId,entityId,accounts,entries,setEntries})
   return <div>
     {msg&&<Msg ok={msg.ok}>{msg.text}</Msg>}
     <StatGrid stats={[{label:"Pasivos activos",value:liabilities.length},{label:"Deuda total (CLP)",value:fmtCLP(totalDebtCLP)},{label:"Cuotas pendientes hoy",value:liabilities.reduce((s,l)=>{const tm=today().slice(0,7);return s+(l.amortTable||[]).filter(r=>!r.paid&&r.date.startsWith(tm)).length;},0)},{label:"Monedas",value:[...new Set(liabilities.map(l=>l.currency))].join(", ")||"—"}]}/>
-    <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}><Btn onClick={()=>setView("new")}>+ Nuevo Pasivo</Btn></div>
+    <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginBottom:14}}>
+      {liabilities.length>0&&<Btn v="gold" onClick={()=>setView("refi")}>🔄 Refinanciar</Btn>}
+      <Btn onClick={()=>setView("new")}>+ Nuevo Pasivo</Btn>
+    </div>
     {liabilities.length===0?<div style={{...S.card,...S.empty}}><div style={{fontSize:32,marginBottom:10}}>🏦</div><div style={{fontFamily:"'Georgia',serif",color:C.muted,marginBottom:14}}>Sin pasivos registrados</div><Btn onClick={()=>setView("new")}>Registrar primer pasivo</Btn></div>
     :<div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>Pasivos</span></div>
       <DataTable cols={[
