@@ -1025,26 +1025,26 @@ function LiabilityForm({onSave,onCancel,initial,entries}){
 
   // ── Refi from ledger balances ──
   const [refiEnabled,setRefiEnabled]=useState(false);
-  const [refiAcc,setRefiAcc]=useState("2400");        // source account code
   const [refiCounterparty,setRefiCounterparty]=useState(""); // filter by counterparty
-  const [refiAmount,setRefiAmount]=useState("");       // override amount (blank = full balance)
   const [refiCashDiff,setRefiCashDiff]=useState("");   // +/- cash difference
   const [refiCashAcc,setRefiCashAcc]=useState("1111");
   const [refiDate,setRefiDate]=useState(f.startDate||today());
 
-  // Compute net balance per account+counterparty from entries
+  // Passive account codes that may carry loan balances
+  const PASIVO_ACCS=["2400","2440","2410","2420","2430","2450","2100","2110"];
+
+  // Compute net balance per account+counterparty for ALL passive accounts
   const ledgerBalances=useMemo(()=>{
     if(!entries||entries.length===0) return {};
     const b={};
     entries.forEach(e=>e.rows.forEach(r=>{
-      if(!r.account) return;
+      if(!r.account||!PASIVO_ACCS.includes(r.account)) return;
       const cp=(r.counterparty||"").trim();
       const key=r.account+"||"+cp;
       if(!b[key]) b[key]={account:r.account,counterparty:cp,debit:0,credit:0};
       b[key].debit+=r.debit||0;
       b[key].credit+=r.credit||0;
     }));
-    // net = credit - debit (liability convention: credit > debit = balance owing)
     return Object.fromEntries(
       Object.entries(b)
         .map(([k,v])=>([k,{...v,balance:v.credit-v.debit}]))
@@ -1052,27 +1052,26 @@ function LiabilityForm({onSave,onCancel,initial,entries}){
     );
   },[entries]);
 
-  // Counterparties available for selected account
+  // All counterparties that have any passive balance
   const availableCounterparties=useMemo(()=>{
     const set=new Set();
-    Object.values(ledgerBalances).forEach(v=>{ if(v.account===refiAcc && v.counterparty) set.add(v.counterparty); });
+    Object.values(ledgerBalances).forEach(v=>{ if(v.counterparty) set.add(v.counterparty); });
     return [...set].sort();
-  },[ledgerBalances,refiAcc]);
+  },[ledgerBalances]);
 
-  // Selected balance
-  const selectedBalance=useMemo(()=>{
-    if(!refiEnabled||!refiAcc) return 0;
-    const key=refiAcc+"||"+(refiCounterparty||"");
-    // if no counterparty selected, sum all for that account
-    if(!refiCounterparty){
-      return Object.values(ledgerBalances).filter(v=>v.account===refiAcc).reduce((s,v)=>s+v.balance,0);
-    }
-    return ledgerBalances[key]?.balance||0;
-  },[ledgerBalances,refiAcc,refiCounterparty,refiEnabled]);
+  // All account lines for the selected counterparty (one line per account with balance)
+  const refiLines=useMemo(()=>{
+    if(!refiEnabled||!refiCounterparty) return [];
+    return Object.values(ledgerBalances)
+      .filter(v=>v.counterparty===refiCounterparty && v.balance>0.5)
+      .sort((a,b)=>a.account.localeCompare(b.account));
+  },[ledgerBalances,refiCounterparty,refiEnabled]);
 
-  const refiAmt    = refiEnabled ? (parseFloat(refiAmount)||selectedBalance) : 0;
+  // Total balance across all accounts for this counterparty
+  const selectedBalance=useMemo(()=>refiLines.reduce((s,v)=>s+v.balance,0),[refiLines]);
+
   const refiCash   = refiEnabled ? (parseFloat(refiCashDiff)||0) : 0;
-  const newLoanAmt = refiEnabled ? (refiAmt + refiCash) : 0;
+  const newLoanAmt = refiEnabled ? (selectedBalance + refiCash) : 0;
 
   function handleSysChange(sys){ upd("system",sys); if(sys==="personalizado"){ const m=parseInt(f.months)||0; if(m>0) setCustomRows(buildCustomScaffold(m,f.startDate||today())); }}
   function handleMonthsChange(val){ upd("months",val); if(f.system==="personalizado"){ const m=parseInt(val)||0; if(m>0) setCustomRows(prev=>Array.from({length:m},(_,i)=>prev[i]||{period:i+1,date:addMonths(f.startDate||today(),i+1),capital:0,interest:0,cuota:0,balance:0,paid:false})); }}
@@ -1103,8 +1102,9 @@ function LiabilityForm({onSave,onCancel,initial,entries}){
     // Build refi metadata if enabled
     const refiMeta = refiEnabled ? {
       refiEnabled:true,
-      refiAcc, refiCounterparty, refiAmount:refiAmt, refiCash, refiCashAcc, refiDate,
-      selectedBalance, newLoanAmt:refiAmt+refiCash,
+      refiLines,           // [{account, counterparty, balance}, ...]
+      refiCounterparty, refiCash, refiCashAcc, refiDate,
+      selectedBalance, newLoanAmt:selectedBalance+refiCash,
     } : {refiEnabled:false};
 
     onSave({id:initial?.id||genId(),...f,originalAmount:amt,annualRate:f.system==="personalizado"?0:(parseFloat(f.annualRate)||0),months:mo,
@@ -1146,34 +1146,39 @@ function LiabilityForm({onSave,onCancel,initial,entries}){
         </div>
         {refiEnabled&&<div style={{border:`1px solid #7c3aed`,borderRadius:4,padding:16,background:"#faf5ff"}}>
           <div style={{fontSize:10,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:"#7c3aed",marginBottom:12}}>Saldo a refinanciar</div>
+
+          {/* Counterparty selector — drives ALL account lines */}
           <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:12}}>
-            <div style={{flex:"0 0 160px"}}>
-              <label style={S.label}>Cuenta contable</label>
-              <select style={S.select} value={refiAcc} onChange={e=>{setRefiAcc(e.target.value);setRefiCounterparty("");}}>
-                {["2400","2440","2100","2110"].map(c=><option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
-            <div style={{flex:1,minWidth:160}}>
-              <label style={S.label}>Acreedor (contraparté) {availableCounterparties.length===0&&<span style={{color:C.muted,fontWeight:400}}> — sin datos en asientos</span>}</label>
+            <div style={{flex:1,minWidth:200}}>
+              <label style={S.label}>Acreedor {availableCounterparties.length===0&&<span style={{color:C.muted,fontWeight:400}}>— sin saldos de pasivo en asientos</span>}</label>
               <select style={S.select} value={refiCounterparty} onChange={e=>setRefiCounterparty(e.target.value)}>
-                <option value="">Todos los acreedores</option>
+                <option value="">Seleccionar acreedor…</option>
                 {availableCounterparties.map(cp=><option key={cp} value={cp}>{cp}</option>)}
               </select>
             </div>
-          </div>
-          {selectedBalance>0
-            ? <div style={{background:"#ede9fe",borderRadius:3,padding:"10px 14px",marginBottom:12,display:"flex",gap:24,flexWrap:"wrap",alignItems:"center"}}>
-                <div><div style={S.sLbl}>Saldo neto en contabilidad</div><div style={{fontWeight:700,fontSize:16,color:"#4c1d95"}}>{fmtCLP(Math.round(selectedBalance))}</div></div>
-                <div style={{fontSize:11,color:"#6d28d9"}}>↑ Este monto se moverá: Débito {refiAcc} / Crédito {f.accountingCode||"2400"} (nuevo préstamo)</div>
-              </div>
-            : <div style={{background:"#f3f4f6",borderRadius:3,padding:"8px 12px",marginBottom:12,fontSize:12,color:C.muted}}>Sin saldo encontrado para esta cuenta/acreedor.</div>
-          }
-          <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:12}}>
-            <div style={{flex:"0 0 180px"}}>
-              <label style={S.label}>Monto a refinanciar (vacío = saldo total)</label>
-              <input style={S.input} type="number" step="1" placeholder={selectedBalance>0?String(Math.round(selectedBalance)):"0"} value={refiAmount} onChange={e=>setRefiAmount(e.target.value)}/>
-            </div>
             <div style={{flex:"0 0 160px"}}>
+              <label style={S.label}>Fecha del asiento</label>
+              <input style={S.input} type="date" value={refiDate} onChange={e=>setRefiDate(e.target.value)}/>
+            </div>
+          </div>
+
+          {/* Show all account lines for this counterparty */}
+          {refiCounterparty&&refiLines.length===0&&<div style={{background:"#f3f4f6",borderRadius:3,padding:"8px 12px",marginBottom:12,fontSize:12,color:C.muted}}>Sin saldos de pasivo para "{refiCounterparty}".</div>}
+          {refiLines.length>0&&<div style={{background:"#ede9fe",borderRadius:3,padding:"10px 14px",marginBottom:12}}>
+            <div style={{fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase",color:"#6d28d9",marginBottom:8}}>Saldos encontrados — se extinguen todos</div>
+            {refiLines.map(v=><div key={v.account} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:`1px solid #c4b5fd`,fontSize:12.5}}>
+              <span><code style={{fontSize:10,color:"#7c3aed",marginRight:6}}>{v.account}</code>{v.counterparty}</span>
+              <span style={{fontWeight:700,color:"#4c1d95"}}>{fmtCLP(Math.round(v.balance))}</span>
+            </div>)}
+            <div style={{display:"flex",justifyContent:"space-between",paddingTop:8,fontWeight:700,fontSize:13}}>
+              <span style={{color:"#4c1d95"}}>Total a extinguir</span>
+              <span style={{color:"#4c1d95"}}>{fmtCLP(Math.round(selectedBalance))}</span>
+            </div>
+          </div>}
+
+          {/* Cash diff */}
+          {refiLines.length>0&&<div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:12}}>
+            <div style={{flex:"0 0 200px"}}>
               <label style={S.label}>Diferencia de caja (+entra / −sale)</label>
               <input style={S.input} type="number" step="1" placeholder="0" value={refiCashDiff} onChange={e=>setRefiCashDiff(e.target.value)}/>
             </div>
@@ -1183,13 +1188,10 @@ function LiabilityForm({onSave,onCancel,initial,entries}){
                 {["1111","1112","1110","1100"].map(x=><option key={x} value={x}>{x}</option>)}
               </select>
             </div>}
-            <div style={{flex:"0 0 160px"}}>
-              <label style={S.label}>Fecha del asiento</label>
-              <input style={{...S.input}} type="date" value={refiDate} onChange={e=>setRefiDate(e.target.value)}/>
-            </div>
-          </div>
+          </div>}
+
           {/* Preview asiento */}
-          {refiAmt>0&&<div style={{background:"#fff",border:`1px solid #c4b5fd`,borderRadius:3,padding:"10px 14px"}}>
+          {refiLines.length>0&&<div style={{background:"#fff",border:`1px solid #c4b5fd`,borderRadius:3,padding:"10px 14px"}}>
             <div style={{fontSize:9.5,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:"#7c3aed",marginBottom:8}}>Asiento que se generará</div>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
               <thead><tr>
@@ -1198,14 +1200,19 @@ function LiabilityForm({onSave,onCancel,initial,entries}){
                 <th style={{...S.th,textAlign:"right",fontSize:9}}>Crédito</th>
               </tr></thead>
               <tbody>
-                <tr><td style={S.td}><code style={{fontSize:10,color:C.muted}}>{refiAcc}</code> Saldo existente{refiCounterparty?` (${refiCounterparty})`:""} — se extingue</td>
-                  <td style={{...S.td,textAlign:"right",fontWeight:700}}>{fmtCLP(Math.round(refiAmt))}</td><td style={{...S.td,textAlign:"right",color:C.border}}>—</td></tr>
+                {refiLines.map(v=><tr key={v.account}>
+                  <td style={S.td}><code style={{fontSize:10,color:C.muted}}>{v.account}</code> {refiCounterparty} — se extingue</td>
+                  <td style={{...S.td,textAlign:"right",fontWeight:700}}>{fmtCLP(Math.round(v.balance))}</td>
+                  <td style={{...S.td,textAlign:"right",color:C.border}}>—</td>
+                </tr>)}
                 {refiCash>0&&<tr><td style={S.td}><code style={{fontSize:10,color:C.muted}}>{refiCashAcc}</code> Entrada de caja</td>
                   <td style={{...S.td,textAlign:"right",fontWeight:700}}>{fmtCLP(Math.round(refiCash))}</td><td style={{...S.td,textAlign:"right",color:C.border}}>—</td></tr>}
-                <tr><td style={S.td}><code style={{fontSize:10,color:C.muted}}>{f.accountingCode||"2400"}</code> Nuevo préstamo</td>
-                  <td style={{...S.td,textAlign:"right",color:C.border}}>—</td><td style={{...S.td,textAlign:"right",fontWeight:700}}>{fmtCLP(Math.round(refiAmt+refiCash))}</td></tr>
+                <tr style={{background:"#f5f3ff"}}><td style={S.td}><code style={{fontSize:10,color:C.muted}}>{f.accountingCode||"2400"}</code> Nuevo préstamo — {f.name||"…"}</td>
+                  <td style={{...S.td,textAlign:"right",color:C.border}}>—</td>
+                  <td style={{...S.td,textAlign:"right",fontWeight:700,color:"#4c1d95"}}>{fmtCLP(Math.round(newLoanAmt))}</td></tr>
                 {refiCash<0&&<tr><td style={S.td}><code style={{fontSize:10,color:C.muted}}>{refiCashAcc}</code> Salida de caja</td>
-                  <td style={{...S.td,textAlign:"right",color:C.border}}>—</td><td style={{...S.td,textAlign:"right",fontWeight:700}}>{fmtCLP(Math.round(Math.abs(refiCash)))}</td></tr>}
+                  <td style={{...S.td,textAlign:"right",color:C.border}}>—</td>
+                  <td style={{...S.td,textAlign:"right",fontWeight:700}}>{fmtCLP(Math.round(Math.abs(refiCash)))}</td></tr>}
               </tbody>
             </table>
           </div>}
@@ -1468,12 +1475,13 @@ function LiabilitiesSection({rates,userId,entityId,accounts,entries,setEntries})
     // ── Generate refinancing entry if requested ──
     const rm = l.refiMeta;
     if(rm?.refiEnabled && rm.refiAmount>0){
-      const {refiAcc,refiCounterparty,refiAmount,refiCash,refiCashAcc,refiDate} = rm;
+      const {refiLines,refiCounterparty,refiCash,refiCashAcc,refiDate,selectedBalance,newLoanAmt} = rm;
       const newAccCode = l.accountingCode||"2400";
       const entryRows=[];
-      entryRows.push({id:genId(),account:refiAcc,debit:Math.round(refiAmount),credit:0,counterparty:refiCounterparty||""});
+      // One debit row per account line (2400 capital + 2440 reajuste + etc.)
+      refiLines.forEach(v=>entryRows.push({id:genId(),account:v.account,debit:Math.round(v.balance),credit:0,counterparty:v.counterparty||""}));
       if(refiCash>0) entryRows.push({id:genId(),account:refiCashAcc,debit:Math.round(refiCash),credit:0,counterparty:""});
-      entryRows.push({id:genId(),account:newAccCode,debit:0,credit:Math.round(refiAmount+refiCash),counterparty:l.lender||""});
+      entryRows.push({id:genId(),account:newAccCode,debit:0,credit:Math.round(newLoanAmt),counterparty:l.lender||""});
       if(refiCash<0) entryRows.push({id:genId(),account:refiCashAcc,debit:0,credit:Math.round(Math.abs(refiCash)),counterparty:""});
 
       const totD=entryRows.reduce((s,r)=>s+r.debit,0);
