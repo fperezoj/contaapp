@@ -2580,12 +2580,268 @@ function EntityManager({entities,setEntities,userId,onClose}){
 // ════════════════════════════════════════════════════════════════
 //  MAIN APP
 // ════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════
+//  CIERRE MENSUAL — Reajuste de Activos por IPC
+// ════════════════════════════════════════════════════════════════
+function CierreMensualSection({entries, setEntries, userId, entityId, accounts}){
+  const [selMonth, setSelMonth]   = useState(()=>{
+    const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-1);
+    return d.toISOString().slice(0,7);
+  });
+  const [ipc, setIpc]             = useState(null);   // {valor, fecha} from API
+  const [ipcLoading, setIpcLoading] = useState(false);
+  const [ipcError, setIpcError]   = useState(null);
+  const [preview, setPreview]     = useState(null);   // [{counterparty, saldo, reajuste}]
+  const [generating, setGenerating] = useState(false);
+  const [msg, setMsg]             = useState(null);
+
+  // All months that have entries
+  const allMonths = useMemo(()=>[...new Set(entries.map(e=>e.date.slice(0,7)))].sort(),[entries]);
+
+  // Fetch IPC for selected month from mindicador.cl
+  async function fetchIPC(month){
+    setIpcLoading(true); setIpcError(null); setIpc(null); setPreview(null);
+    try {
+      const [year] = month.split("-");
+      const res = await fetch(`https://mindicador.cl/api/ipc/${year}`);
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      const data = await res.json();
+      // serie: [{fecha, valor}] — find the entry whose fecha matches our month
+      const targetMonth = month; // "YYYY-MM"
+      const entry = (data.serie||[]).find(s=>s.fecha?.slice(0,7)===targetMonth);
+      if(!entry) throw new Error(`Sin dato IPC para ${month}`);
+      setIpc({valor:entry.valor, fecha:entry.fecha?.slice(0,10)});
+    } catch(e){
+      setIpcError(e.message||"Error al obtener IPC");
+    } finally {
+      setIpcLoading(false);
+    }
+  }
+
+  useEffect(()=>{ if(selMonth) fetchIPC(selMonth); },[selMonth]);
+
+  // Compute saldo of account 1630 per counterparty AT START of selected month
+  // = all entries BEFORE selMonth
+  const balancesByCP = useMemo(()=>{
+    const b={};
+    entries.forEach(e=>{
+      if(e.date.slice(0,7) >= selMonth) return; // only entries before this month
+      e.rows.forEach(r=>{
+        if(r.account !== "1630") return;
+        const cp = (r.counterparty||"(sin contraparte)").trim();
+        if(!b[cp]) b[cp]={debit:0,credit:0};
+        b[cp].debit  += r.debit||0;
+        b[cp].credit += r.credit||0;
+      });
+    });
+    // Net saldo for each CP (debit - credit for asset account)
+    return Object.entries(b)
+      .map(([cp,v])=>({counterparty:cp, saldo:v.debit-v.credit}))
+      .filter(v=>Math.abs(v.saldo)>0.5)
+      .sort((a,b)=>a.counterparty.localeCompare(b.counterparty));
+  },[entries,selMonth]);
+
+  // Generate preview table
+  function computePreview(){
+    if(!ipc||balancesByCP.length===0) return;
+    const varIPC = ipc.valor / 100; // e.g. 0.4 % → 0.004
+    const rows = balancesByCP.map(({counterparty,saldo})=>({
+      counterparty,
+      saldo: Math.round(saldo),
+      reajuste: Math.round(saldo * varIPC),
+    }));
+    setPreview(rows);
+  }
+
+  // Check if reajuste already exists for this month
+  const alreadyGenerated = useMemo(()=>
+    entries.some(e=>e.date.startsWith(selMonth) && e.reference==="Auto-Reajuste-IPC")
+  ,[entries, selMonth]);
+
+  async function generateEntries(){
+    if(!preview||preview.length===0) return;
+    setGenerating(true);
+    try {
+      const varIPC = ipc.valor/100;
+      const lastDay = new Date(selMonth+"-01");
+      lastDay.setMonth(lastDay.getMonth()+1); lastDay.setDate(0);
+      const date = lastDay.toISOString().slice(0,10);
+
+      let curEntries = [...entries];
+      for(const row of preview){
+        if(row.reajuste===0) continue;
+        const isPositive = row.reajuste > 0;
+        const abs = Math.abs(row.reajuste);
+        const entryRows = isPositive
+          ? [ // activo sube, ingreso
+              {id:genId(),account:"1630",debit:abs,credit:0,counterparty:row.counterparty,note:"Reajuste IPC"},
+              {id:genId(),account:"4300",debit:0,credit:abs,counterparty:row.counterparty,note:"Reajuste IPC"},
+            ]
+          : [ // activo baja, pérdida
+              {id:genId(),account:"5300",debit:abs,credit:0,counterparty:row.counterparty,note:"Reajuste IPC negativo"},
+              {id:genId(),account:"1630",debit:0,credit:abs,counterparty:row.counterparty,note:"Reajuste IPC negativo"},
+            ];
+        const n = curEntries.length+1;
+        const entry = {
+          id:genId(), number:n, date,
+          description:`Reajuste IPC ${selMonth} — ${row.counterparty} (${ipc.valor>0?"+":""}${ipc.valor}%)`,
+          reference:"Auto-Reajuste-IPC",
+          rows:entryRows, totalDebit:abs, totalCredit:abs,
+          createdAt:new Date().toISOString(),
+        };
+        curEntries = [...curEntries, entry];
+        await dbUpsertEntry(userId, entityId, entry, curEntries);
+      }
+      setEntries(curEntries);
+      setMsg({ok:true, text:`✓ ${preview.filter(r=>r.reajuste!==0).length} asientos de reajuste generados para ${selMonth}.`});
+      setPreview(null);
+      setTimeout(()=>setMsg(null),6000);
+    } catch(e){
+      setMsg({ok:false, text:"Error: "+e.message});
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  const fmtPct = v => v==null?"—":`${v>0?"+":""}${v}%`;
+  const totalReajuste = preview ? preview.reduce((s,r)=>s+r.reajuste,0) : 0;
+
+  return <div>
+    {msg&&<Msg ok={msg.ok}>{msg.text}</Msg>}
+
+    {/* ── Header ── */}
+    <StatGrid stats={[
+      {label:"Mes seleccionado",  value:selMonth?new Date(selMonth+"-15").toLocaleDateString("es-CL",{month:"long",year:"numeric"}):"—"},
+      {label:"IPC del mes",       value:ipcLoading?"…":ipcError?"Error":fmtPct(ipc?.valor)},
+      {label:"Contrapartes 1630", value:balancesByCP.length},
+      {label:"Saldo total 1630",  value:fmtCLP(balancesByCP.reduce((s,v)=>s+v.saldo,0))},
+    ]}/>
+
+    {/* ── Controls ── */}
+    <div style={S.card}><div style={S.cBody}>
+      <div style={{display:"flex",gap:14,flexWrap:"wrap",alignItems:"flex-end"}}>
+        <div style={{flex:"0 0 200px"}}>
+          <label style={S.label}>Mes de cierre</label>
+          <select style={S.select} value={selMonth} onChange={e=>setSelMonth(e.target.value)}>
+            {allMonths.map(m=><option key={m} value={m}>
+              {new Date(m+"-15").toLocaleDateString("es-CL",{month:"long",year:"numeric"})}
+            </option>)}
+          </select>
+        </div>
+
+        {/* IPC status */}
+        <div style={{flex:"0 0 240px"}}>
+          <label style={S.label}>IPC obtenido (mindicador.cl)</label>
+          <div style={{...S.input,background:"#f8f6f1",display:"flex",alignItems:"center",gap:8,cursor:"default"}}>
+            {ipcLoading&&<span style={{color:C.muted,fontSize:12}}>Consultando…</span>}
+            {ipcError&&<span style={{color:C.danger,fontSize:12}}>⚠ {ipcError}</span>}
+            {ipc&&!ipcLoading&&<>
+              <span style={{fontWeight:700,fontSize:15,color:ipc.valor>0?C.green:ipc.valor<0?C.danger:C.muted}}>{fmtPct(ipc.valor)}</span>
+              <span style={{fontSize:10,color:C.muted}}>publicado {fmtDate(ipc.fecha)}</span>
+            </>}
+          </div>
+        </div>
+
+        <div style={{display:"flex",gap:8,alignItems:"flex-end"}}>
+          <Btn onClick={computePreview} disabled={!ipc||ipcLoading||balancesByCP.length===0}>
+            Vista previa
+          </Btn>
+          {ipcError&&<Btn v="outline" onClick={()=>fetchIPC(selMonth)}>↻ Reintentar IPC</Btn>}
+        </div>
+      </div>
+
+      {alreadyGenerated&&<div style={{marginTop:12,background:"#fef9c3",border:"1px solid #f59e0b",borderRadius:3,padding:"8px 14px",fontSize:12,color:"#92400e"}}>
+        ⚠ Ya existen asientos de reajuste generados para {selMonth}. Si generas de nuevo se duplicarán.
+      </div>}
+    </div></div>
+
+    {/* ── Saldos por contraparte ── */}
+    {balancesByCP.length>0&&<div style={S.card}>
+      <div style={S.cHead()}><span style={S.cTitle}>Saldos cuenta 1630 — inicio de {selMonth}</span></div>
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12.5}}>
+          <thead><tr>
+            {["Contraparte","Saldo inicio mes","IPC","Reajuste estimado"].map((h,i)=>(
+              <th key={i} style={{...S.th,textAlign:i>=1?"right":"left"}}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>{balancesByCP.map((v,i)=>{
+            const rej = ipc ? Math.round(v.saldo*(ipc.valor/100)) : null;
+            return <tr key={v.counterparty} style={{background:i%2===0?"#fafaf9":"#fff"}}>
+              <td style={{...S.td,fontFamily:"'Georgia',serif"}}>{v.counterparty}</td>
+              <td style={{...S.td,textAlign:"right",fontWeight:700}}>{fmtCLP(v.saldo)}</td>
+              <td style={{...S.td,textAlign:"right",color:ipc?.valor>0?C.green:ipc?.valor<0?C.danger:C.muted}}>
+                {ipcLoading?"…":fmtPct(ipc?.valor)}
+              </td>
+              <td style={{...S.td,textAlign:"right",fontWeight:700,
+                color:rej==null?C.muted:rej>=0?C.green:C.danger}}>
+                {rej==null?"—":`${rej>=0?"+":""}${fmtCLP(Math.abs(rej))}`}
+              </td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>
+    </div>}
+
+    {/* ── Preview asientos ── */}
+    {preview&&<div style={S.card}>
+      <div style={S.cHead()}>
+        <span style={S.cTitle}>Asientos a generar</span>
+        <span style={{fontSize:11,color:C.gold}}>{preview.filter(r=>r.reajuste!==0).length} asientos</span>
+      </div>
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12.5}}>
+          <thead><tr>
+            {["Contraparte","Cuenta Débito","Cuenta Crédito","Monto reajuste"].map((h,i)=>(
+              <th key={i} style={{...S.th,textAlign:i>=3?"right":"left"}}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>{preview.map((r,i)=>{
+            if(r.reajuste===0) return null;
+            const isPos = r.reajuste>0;
+            return <tr key={r.counterparty} style={{background:i%2===0?"#fafaf9":"#fff"}}>
+              <td style={{...S.td,fontFamily:"'Georgia',serif"}}>{r.counterparty}</td>
+              <td style={S.td}><code style={{fontSize:11,color:C.muted}}>{isPos?"1630":"5300"}</code> {isPos?"Inversiones (sube)":"Pérdida en Inversiones"}</td>
+              <td style={S.td}><code style={{fontSize:11,color:C.muted}}>{isPos?"4300":"1630"}</code> {isPos?"Ganancia en Inversiones":"Inversiones (baja)"}</td>
+              <td style={{...S.td,textAlign:"right",fontWeight:700,color:isPos?C.green:C.danger}}>
+                {isPos?"+":"-"}{fmtCLP(Math.abs(r.reajuste))}
+              </td>
+            </tr>;
+          })}</tbody>
+          <tfoot><tr style={{background:C.navy}}>
+            <td colSpan={3} style={{...S.td,color:C.gold,fontWeight:700,fontSize:10,letterSpacing:2,textTransform:"uppercase"}}>Total reajuste</td>
+            <td style={{...S.td,textAlign:"right",fontWeight:700,color:totalReajuste>=0?"#86efac":"#fca5a5"}}>
+              {totalReajuste>=0?"+":""}{fmtCLP(totalReajuste)}
+            </td>
+          </tr></tfoot>
+        </table>
+      </div>
+      <div style={{padding:"14px 16px",display:"flex",gap:10,justifyContent:"flex-end",borderTop:`1px solid ${C.border}`}}>
+        <Btn v="outline" onClick={()=>setPreview(null)}>Cancelar</Btn>
+        <Btn onClick={generateEntries} disabled={generating}>
+          {generating?"Generando…":"✓ Generar asientos de reajuste"}
+        </Btn>
+      </div>
+    </div>}
+
+    {/* ── Empty state ── */}
+    {balancesByCP.length===0&&<div style={{...S.card,...S.empty}}>
+      <div style={{fontSize:32,marginBottom:10}}>📅</div>
+      <div style={{fontFamily:"'Georgia',serif",color:C.muted}}>
+        Sin saldo en cuenta 1630 antes de {selMonth}
+      </div>
+    </div>}
+  </div>;
+}
+
 const SECTIONS=[
   {id:"accounting",label:"Contabilidad",icon:"⚖",tabs:[{id:"new",label:"Nuevo asiento"},{id:"entries",label:"Asientos"},{id:"reports",label:"Reportes"},{id:"accounts",label:"Plan de cuentas"}]},
   {id:"liabilities",label:"Pasivos",icon:"🏦",tabs:[]},
   {id:"investments",label:"Inversiones",icon:"📊",tabs:[]},
   {id:"inventory",label:"Inventario",icon:"📦",tabs:[]},
   {id:"fixed",label:"Activos Fijos",icon:"🏭",tabs:[]},
+  {id:"cierre",label:"Cierre Mensual",icon:"📅",tabs:[]},
 ];
 
 export default function App(){
@@ -2685,6 +2941,7 @@ export default function App(){
         {section==="investments"&&<InvestmentsSection  rates={rates} userId={uid} entityId={entityId} accounts={accounts} entries={entries} setEntries={setEntries}/>}
         {section==="inventory"  &&<InventorySection    rates={rates} userId={uid} entityId={entityId} accounts={accounts} entries={entries} setEntries={setEntries}/>}
         {section==="fixed"      &&<FixedAssetsSection  rates={rates} userId={uid} entityId={entityId}/>}
+        {section==="cierre"     &&<CierreMensualSection entries={entries} setEntries={setEntries} userId={uid} entityId={entityId} accounts={accounts}/>}
       </main>
     </div>
   );
