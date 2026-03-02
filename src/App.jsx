@@ -336,7 +336,7 @@ const DEFAULT_ACCOUNTS = [
   {code:"1510",name:"Activo Fijo - Vehículos",type:"Activo"},{code:"1520",name:"Deprec. Acumulada Maquinaria",type:"Activo"},
   {code:"2100",name:"Cuentas por Pagar Proveedores",type:"Pasivo"},{code:"2110",name:"Documentos por Pagar",type:"Pasivo"},
   {code:"2200",name:"IVA Débito Fiscal",type:"Pasivo"},{code:"2300",name:"Impuesto por Pagar",type:"Pasivo"},
-  {code:"2400",name:"Préstamo Bancario LP",type:"Pasivo"},
+  {code:"2400",name:"Préstamo Bancario LP",type:"Pasivo"},{code:"2440",name:"Reajuste UF Deuda",type:"Pasivo"},
   {code:"3100",name:"Capital Social",type:"Patrimonio"},{code:"3200",name:"Utilidades Retenidas",type:"Patrimonio"},
   {code:"3300",name:"Resultado del Ejercicio",type:"Patrimonio"},
   {code:"4100",name:"Ingresos por Ventas",type:"Ingreso"},{code:"4110",name:"Otros Ingresos",type:"Ingreso"},
