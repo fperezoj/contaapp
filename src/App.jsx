@@ -305,7 +305,16 @@ const DEFAULT_ACCOUNTS = [
   {code:"5100",name:"Costo de Ventas",type:"Gasto"},{code:"5200",name:"Gastos de Remuneraciones",type:"Gasto"},
   {code:"5210",name:"Gastos de Arriendo",type:"Gasto"},{code:"5220",name:"Gastos Servicios Básicos",type:"Gasto"},
   {code:"5230",name:"Gastos de Depreciación",type:"Gasto"},{code:"5240",name:"Gastos Financieros",type:"Gasto"},
-  {code:"5250",name:"Gastos Administrativos",type:"Gasto"},
+  {code:"5241",name:"Reajuste UF",type:"Gasto"},{code:"5250",name:"Gastos Administrativos",type:"Gasto"},
+  {code:"1600",name:"Inversiones en Acciones",type:"Activo"},{code:"1610",name:"Inversiones en Bonos",type:"Activo"},
+  {code:"1620",name:"Inversiones en Fondos/ETF",type:"Activo"},{code:"1630",name:"Otros Instrumentos Financieros",type:"Activo"},
+  {code:"4200",name:"Dividendos Recibidos",type:"Ingreso"},{code:"4300",name:"Ganancia en Inversiones",type:"Ingreso"},
+  {code:"4400",name:"Intereses Ganados",type:"Ingreso"},{code:"4500",name:"Otros Ingresos No Operacionales",type:"Ingreso"},
+  {code:"5300",name:"Pérdida en Inversiones",type:"Gasto"},
+  {code:"5310",name:"Gastos de Intermediación",type:"Gasto"},{code:"5320",name:"Gastos Legales",type:"Gasto"},
+  {code:"5330",name:"Gastos Notariales",type:"Gasto"},{code:"5340",name:"Impuestos y Contribuciones",type:"Gasto"},
+  {code:"5350",name:"Intereses Pagados",type:"Gasto"},{code:"5360",name:"Patentes Municipales",type:"Gasto"},
+  {code:"5370",name:"Dividendos Pagados",type:"Gasto"},
 ];
 const ACC_TYPES = ["Activo","Pasivo","Patrimonio","Ingreso","Gasto"];
 
@@ -679,7 +688,7 @@ function EditCell({value,onChange}){
 //  LIABILITIES TAB
 // ════════════════════════════════════════════════════════════════
 function LiabilityForm({onSave,onCancel,initial}){
-  const empty={name:"",lender:"",currency:"CLP",originalAmount:"",annualRate:"",months:"",startDate:today(),system:"frances",notes:"",tags:""};
+  const empty={name:"",lender:"",currency:"CLP",originalAmount:"",annualRate:"",months:"",startDate:today(),system:"frances",notes:"",tags:"",accountingCode:"2400"};
   const [f,setF]=useState(initial||empty);
   const [customRows,setCustomRows]=useState(initial?.system==="personalizado"?(initial.amortTable||[]):[]);
   const [err,setErr]=useState("");
@@ -729,6 +738,15 @@ function LiabilityForm({onSave,onCancel,initial}){
         <Inp label="Fecha inicio *" type="date" value={f.startDate} onChange={e=>upd("startDate",e.target.value)}/>
       </div>
       <div style={{...S.g2,marginBottom:16}}><Sel label="Sistema de amortización" options={AMORT_SYSTEMS} value={f.system} onChange={e=>handleSysChange(e.target.value)}/><Inp label="Etiquetas" placeholder="largo plazo, hipotecario" value={f.tags} onChange={e=>upd("tags",e.target.value)}/></div>
+      <div style={{marginBottom:16}}>
+        <label style={S.label}>Cuenta contable del pasivo (para asientos automáticos al pagar)</label>
+        <select style={S.select} value={f.accountingCode||"2400"} onChange={e=>upd("accountingCode",e.target.value)}>
+          <option value="2100">2100 – Cuentas por Pagar Proveedores</option>
+          <option value="2110">2110 – Documentos por Pagar</option>
+          <option value="2400">2400 – Préstamo Bancario LP</option>
+        </select>
+        <div style={{fontSize:10.5,color:C.muted,marginTop:4}}>Al marcar una cuota como pagada se generarán asientos automáticos usando esta cuenta.</div>
+      </div>
       <Field label="Notas"><textarea style={S.textarea} value={f.notes} onChange={e=>upd("notes",e.target.value)} placeholder="Condiciones, garantías…"/></Field>
 
       {preview&&!isCustom&&<div style={{background:"#f8f6f1",border:`1px solid ${C.border}`,borderRadius:3,padding:"12px 16px",marginTop:14,display:"flex",gap:28,flexWrap:"wrap"}}>
@@ -807,7 +825,7 @@ function AmortTable({liability,onToggle}){
 }
 
 
-function LiabilitiesSection({rates,userId}){
+function LiabilitiesSection({rates,userId,accounts,entries,setEntries}){
   const [liabilities,setLiabilities]=useState(()=>lsLoad("ac_liabilities",[]));
   const [view,setView]=useState("list"); const [sel,setSel]=useState(null); const [msg,setMsg]=useState(null);
 
@@ -823,7 +841,15 @@ function LiabilitiesSection({rates,userId}){
     persist(u,l,null); setMsg({ok:true,text:`"${l.name}" guardado.`}); setView("list"); setTimeout(()=>setMsg(null),4000);
   }
   function del(id){ if(!confirm("¿Eliminar pasivo?")) return; const u=liabilities.filter(x=>x.id!==id); persist(u,null,id); if(sel?.id===id){setSel(null);setView("list");} }
-  function togglePaid(lid,idx){
+
+  async function togglePaid(lid,idx){
+    const liability=liabilities.find(l=>l.id===lid);
+    const row=liability?.amortTable?.[idx];
+    if(!row) return;
+    const wasPaid=row.paid;
+    const nowPaying=!wasPaid;
+
+    // Update amortTable state
     const u=liabilities.map(l=>{
       if(l.id!==lid) return l;
       const t=l.amortTable.map((r,i)=>i===idx?{...r,paid:!r.paid}:r);
@@ -833,6 +859,84 @@ function LiabilitiesSection({rates,userId}){
     });
     setLiabilities(u); lsSave("ac_liabilities",u);
     if(sel?.id===lid) setSel(u.find(x=>x.id===lid));
+
+    // ── Generar asientos contables al pagar cuota ──
+    if(nowPaying && liability){
+      const isUF = liability.currency==="UF";
+      const ufRate = rates["UF"]||37500;
+      const currency = liability.currency;
+
+      // Convertir montos a CLP
+      const toCLPLocal = (v) => {
+        if(currency==="CLP") return Math.round(v);
+        if(currency==="UF")  return Math.round(v*ufRate);
+        if(currency==="USD") return Math.round(v*(rates["USD"]||950));
+        if(currency==="EUR") return Math.round(v*(rates["EUR"]||1030));
+        return Math.round(v);
+      };
+
+      const capitalCLP = toCLPLocal(row.capital);
+      const interesCLP = toCLPLocal(row.interest);
+      const cuotaCLP   = capitalCLP + interesCLP;
+
+      // Cuenta del pasivo — intentar detectar por etiquetas o usar 2400 por defecto
+      const liabAccCode = liability.accountingCode || "2400";
+      const currentEntries = lsLoad("ac_entries",[]);
+
+      // ── Asiento 1: Reajuste UF (solo si es UF) ──
+      if(isUF){
+        // Calcular reajuste del período: capital pendiente antes de esta cuota × variación UF
+        // Usamos la UF actual vs UF del mes anterior (aproximado con 1% mensual si no tenemos histórico)
+        const paidBefore = liability.amortTable.slice(0,idx).filter(r=>r.paid).reduce((s,r)=>s+r.capital,0);
+        const saldoUF = liability.originalAmount - paidBefore;
+        // Reajuste estimado = saldo × (UF actual - UF mes anterior) / UF mes anterior
+        // Sin histórico UF usamos variación mensual implícita de la tasa
+        const ufMesAnterior = ufRate / (1 + (liability.annualRate||3)/100/12);
+        const reajusteCLP = Math.round(saldoUF * (ufRate - ufMesAnterior));
+
+        if(reajusteCLP > 0){
+          const n1 = currentEntries.length + 1;
+          const e1 = {
+            id:genId(), number:n1, date:row.date,
+            description:`Reajuste UF cuota ${row.period} — ${liability.name}`,
+            reference:"Auto-Pasivos",
+            rows:[
+              {id:genId(),account:"5241",debit:reajusteCLP,credit:0},
+              {id:genId(),account:liabAccCode,debit:0,credit:reajusteCLP},
+            ],
+            totalDebit:reajusteCLP, totalCredit:reajusteCLP,
+            createdAt:new Date().toISOString()
+          };
+          const updated1=[...currentEntries,e1];
+          setEntries(updated1);
+          await dbUpsertEntry(userId,e1,updated1);
+        }
+      }
+
+      // ── Asiento 2: Pago de cuota ──
+      if(cuotaCLP > 0){
+        const currentEntries2 = lsLoad("ac_entries",[]);
+        const n2 = currentEntries2.length + 1;
+        const entryRows2=[];
+        if(capitalCLP>0) entryRows2.push({id:genId(),account:liabAccCode,debit:capitalCLP,credit:0});
+        if(interesCLP>0) entryRows2.push({id:genId(),account:"5240",debit:interesCLP,credit:0});
+        entryRows2.push({id:genId(),account:"1110",debit:0,credit:cuotaCLP});
+
+        const e2={
+          id:genId(), number:n2, date:row.date,
+          description:`Pago cuota ${row.period}/${liability.months} — ${liability.name}`,
+          reference:"Auto-Pasivos",
+          rows:entryRows2,
+          totalDebit:cuotaCLP, totalCredit:cuotaCLP,
+          createdAt:new Date().toISOString()
+        };
+        const updated2=[...currentEntries2,e2];
+        setEntries(updated2);
+        await dbUpsertEntry(userId,e2,updated2);
+        setMsg({ok:true,text:`Cuota ${row.period} pagada. ${isUF?"Asientos de reajuste y pago generados.":"Asiento de pago generado."}`});
+        setTimeout(()=>setMsg(null),5000);
+      }
+    }
   }
   const totalDebtCLP=useMemo(()=>liabilities.reduce((s,l)=>{const pending=(l.amortTable||[]).filter(r=>!r.paid).reduce((a,r)=>a+r.capital,0); return s+toCLP(pending,l.currency,rates);},0),[liabilities,rates]);
 
@@ -880,7 +984,7 @@ function LiabilitiesSection({rates,userId}){
 const INV_TYPES=["Acción","Bono","Fondo","ETF","Otro"];
 const INV_MOVES=[{v:"compra",l:"Compra"},{v:"venta",l:"Venta"},{v:"dividendo",l:"Dividendo"},{v:"cupon",l:"Cupón/Interés"},{v:"ajuste",l:"Ajuste"}];
 
-function InvestmentsSection({rates,userId}){
+function InvestmentsSection({rates,userId,accounts,entries,setEntries}){
   const [insts,setInsts]=useState(()=>lsLoad("ac_inv_instruments",[]));
   const [movs, setMovs] =useState(()=>lsLoad("ac_inv_movements",[]));
   const [mkt,  setMkt]  =useState(()=>lsLoad("ac_inv_market",{}));
@@ -890,7 +994,6 @@ function InvestmentsSection({rates,userId}){
     if(!userId) return;
     dbLoad("ac_inv_instruments",userId,"ac_inv_instruments",[]).then(setInsts);
     dbLoad("ac_inv_movements",userId,"ac_inv_movements",[]).then(setMovs);
-    // market prices stored as array per instrument - load and rebuild map
     dbLoad("ac_inv_market",userId,"ac_inv_market_rows",[]).then(rows=>{
       const map={};
       rows.forEach(r=>{ if(!map[r.instrumentId]) map[r.instrumentId]=[]; map[r.instrumentId].push(r); });
@@ -899,8 +1002,20 @@ function InvestmentsSection({rates,userId}){
     });
   },[userId]);
 
-  const eI={name:"",ticker:"",type:"Acción",currency:"USD",isin:"",custodian:"",notes:""};
-  const eM={instrumentId:"",type:"compra",date:today(),qty:"",unitPrice:"",fxRate:"",broker:"",notes:"",ref:""};
+  // ── Generar asiento contable automático ──
+  async function createEntry({date, description, entryRows}){
+    const totalD=entryRows.reduce((s,r)=>s+r.debit,0);
+    const totalC=entryRows.reduce((s,r)=>s+r.credit,0);
+    const currentEntries = lsLoad("ac_entries",[]);
+    const n = currentEntries.length + 1;
+    const newEntry={id:genId(),number:n,date,description,reference:"Auto-Inversiones",rows:entryRows,totalDebit:totalD,totalCredit:totalC,createdAt:new Date().toISOString()};
+    const updated=[...currentEntries,newEntry];
+    setEntries(updated);
+    await dbUpsertEntry(userId,newEntry,updated);
+  }
+
+  const eI={name:"",ticker:"",type:"Acción",currency:"USD",isin:"",custodian:"",notes:"",accountCode:""};
+  const eM={instrumentId:"",type:"compra",date:today(),qty:"",unitPrice:"",fxRate:"",broker:"",notes:"",ref:"",comisionPct:"",extras:[]};
   const eMk={instrumentId:"",date:today(),price:"",source:""};
   const [iF,setIF]=useState(eI); const [mF,setMF]=useState(eM); const [mkF,setMkF]=useState(eMk);
 
@@ -930,22 +1045,110 @@ function InvestmentsSection({rates,userId}){
     setInsts(u); dbUpsert("ac_inv_instruments",userId,inst,"ac_inv_instruments",u);
     setMsg({ok:true,text:`"${inst.name}" guardado.`}); setView("list");setSel(null);setIF(eI);setTimeout(()=>setMsg(null),3000);
   }
-  function saveMov(){
+  async function saveMov(){
     setErr(""); if(!mF.instrumentId) return setErr("Selecciona instrumento.");
     const qty=parseFloat(mF.qty),price=parseFloat(mF.unitPrice);
     if(!qty||qty<=0) return setErr("Cantidad inválida."); if(isNaN(price)||price<0) return setErr("Precio inválido.");
     if(mF.type==="venta"&&qty>(portfolio[mF.instrumentId]?.qty||0)) return setErr("Posición insuficiente.");
-    const m={id:genId(),...mF,qty,unitPrice:price,fxRate:parseFloat(mF.fxRate)||null,createdAt:new Date().toISOString()};
+
+    // Intermediación
+    const montoBase=qty*price;
+    const inst=insts.find(x=>x.id===mF.instrumentId);
+    const fx=parseFloat(mF.fxRate)||(inst?.currency==="CLP"?1:rates[inst?.currency]||1);
+    const comisionMonto=montoBase*(parseFloat(mF.comisionPct)||0)/100;
+    const extrasMonto=(mF.extras||[]).reduce((s,e)=>s+parseFloat(e.monto||0),0);
+    const totalIntermOrig=comisionMonto+extrasMonto; // en moneda del instrumento (comision) + CLP (extras)
+    const totalIntermCLP=Math.round(comisionMonto*(inst?.currency==="CLP"?1:fx)+extrasMonto);
+
+    const m={id:genId(),...mF,qty,unitPrice:price,fxRate:parseFloat(mF.fxRate)||null,
+      comisionPct:parseFloat(mF.comisionPct)||0,totalIntermCLP,extras:mF.extras||[],
+      createdAt:new Date().toISOString()};
     const u=[...movs,m]; setMovs(u); dbUpsert("ac_inv_movements",userId,m,"ac_inv_movements",u);
-    setMsg({ok:true,text:"Movimiento registrado."}); setView(sel?"detail":"list");setMF(eM);setTimeout(()=>setMsg(null),3000);
+
+    // ── Asiento contable automático ──
+    const montoCLP=Math.round(qty*price*(inst?.currency==="CLP"?1:fx));
+    const accCode=inst?.accountCode;
+
+    if(accCode && montoCLP>0){
+      const s=portfolio[mF.instrumentId]||{};
+      const costoTotalCLP=Math.round(qty*s.avgCost*(inst?.currency==="CLP"?1:fx));
+      const gpCLP=montoCLP-costoTotalCLP;
+      const ticker=inst?.ticker||inst?.name||"Inversión";
+      const descInterm=totalIntermCLP>0?` + interm. ${fmtCLP(totalIntermCLP)}`:"";
+
+      if(mF.type==="compra"){
+        const rows=[
+          {id:genId(),account:accCode,debit:montoCLP+(totalIntermCLP),credit:0}, // capitalizar intermediación en compra
+          {id:genId(),account:"1110",debit:0,credit:montoCLP+totalIntermCLP},
+        ];
+        await createEntry({date:mF.date,description:`Compra ${qty} ${ticker} @ ${price} ${inst?.currency}${descInterm}`,entryRows:rows});
+      } else if(mF.type==="venta"){
+        const rows=[];
+        rows.push({id:genId(),account:"1110",debit:montoCLP,credit:0});
+        if(gpCLP>=0){
+          rows.push({id:genId(),account:accCode,debit:0,credit:costoTotalCLP});
+          rows.push({id:genId(),account:"4300",debit:0,credit:gpCLP});
+        } else {
+          rows.push({id:genId(),account:"5300",debit:Math.abs(gpCLP),credit:0});
+          rows.push({id:genId(),account:accCode,debit:0,credit:costoTotalCLP});
+        }
+        // Intermediación en venta = gasto directo
+        if(totalIntermCLP>0){
+          rows.push({id:genId(),account:"5310",debit:totalIntermCLP,credit:0});
+          rows.push({id:genId(),account:"1110",debit:0,credit:totalIntermCLP});
+        }
+        await createEntry({date:mF.date,description:`Venta ${qty} ${ticker} @ ${price} ${inst?.currency}${descInterm}`,entryRows:rows});
+      } else if(mF.type==="dividendo"||mF.type==="cupon"){
+        const rows=[
+          {id:genId(),account:"1110",debit:montoCLP,credit:0},
+          {id:genId(),account:"4200",debit:0,credit:montoCLP},
+        ];
+        if(totalIntermCLP>0){
+          rows.push({id:genId(),account:"5310",debit:totalIntermCLP,credit:0});
+          rows.push({id:genId(),account:"1110",debit:0,credit:totalIntermCLP});
+        }
+        await createEntry({date:mF.date,description:`${mF.type==="dividendo"?"Dividendo":"Cupón"} ${ticker}${descInterm}`,entryRows:rows});
+      }
+    }
+
+    setMsg({ok:true,text:`Movimiento registrado.${accCode?" Asiento contable generado.":""}`});
+    setView(sel?"detail":"list");setMF(eM);setTimeout(()=>setMsg(null),4000);
   }
-  function saveMk(){
+  async function saveMk(){
     setErr(""); if(!mkF.instrumentId) return setErr("Selecciona instrumento.");
     const price=parseFloat(mkF.price); if(isNaN(price)||price<0) return setErr("Precio inválido.");
     const entry={id:genId(),instrumentId:mkF.instrumentId,date:mkF.date,price,source:mkF.source,createdAt:new Date().toISOString()};
     const newMkt={...mkt,[mkF.instrumentId]:[...(mkt[mkF.instrumentId]||[]),entry].sort((a,b)=>b.date.localeCompare(a.date))};
     setMkt(newMkt); lsSave("ac_inv_market",newMkt); dbUpsert("ac_inv_market",userId,entry,"ac_inv_market_rows",[...Object.values(newMkt).flat()]);
-    setMsg({ok:true,text:"Precio registrado."}); setView(sel?"detail":"list");setMkF(eMk);setTimeout(()=>setMsg(null),3000);
+
+    // ── Ajuste por precio de mercado ──
+    const inst=insts.find(x=>x.id===mkF.instrumentId);
+    const s=portfolio[mkF.instrumentId]||{};
+    const accCode=inst?.accountCode;
+    if(accCode && s.qty>0){
+      const fx=inst?.currency==="CLP"?1:rates[inst?.currency]||1;
+      const valorMktCLP=Math.round(price*s.qty*fx);
+      const valorLibroCLP=Math.round(s.totalCost*fx);
+      const diff=valorMktCLP-valorLibroCLP;
+      if(Math.abs(diff)>1){
+        const ticker=inst?.ticker||inst?.name||"Inversión";
+        let entryRows;
+        if(diff>0){
+          entryRows=[
+            {id:genId(),account:accCode,debit:diff,credit:0},
+            {id:genId(),account:"4300",debit:0,credit:diff},
+          ];
+        } else {
+          entryRows=[
+            {id:genId(),account:"5300",debit:Math.abs(diff),credit:0},
+            {id:genId(),account:accCode,debit:0,credit:Math.abs(diff)},
+          ];
+        }
+        await createEntry({date:mkF.date,description:`Ajuste mercado ${ticker} @ ${price} ${inst?.currency}`,entryRows});
+      }
+    }
+    setMsg({ok:true,text:`Precio registrado.${accCode&&s.qty>0?" Ajuste contable generado.":""}`});
+    setView(sel?"detail":"list");setMkF(eMk);setTimeout(()=>setMsg(null),4000);
   }
   function delInst(id){
     if(!confirm("¿Eliminar instrumento?")) return;
@@ -958,11 +1161,21 @@ function InvestmentsSection({rates,userId}){
     {err&&<Msg>{err}</Msg>}
     <div style={{...S.g3,marginBottom:14}}><Inp label="Nombre *" placeholder="Apple Inc." value={iF.name} onChange={e=>setIF(f=>({...f,name:e.target.value}))}/><Inp label="Ticker" placeholder="AAPL" value={iF.ticker} onChange={e=>setIF(f=>({...f,ticker:e.target.value.toUpperCase()}))}/><Sel label="Tipo" options={INV_TYPES} value={iF.type} onChange={e=>setIF(f=>({...f,type:e.target.value}))}/></div>
     <div style={{...S.g3,marginBottom:14}}><Sel label="Moneda" options={CURRENCIES} value={iF.currency} onChange={e=>setIF(f=>({...f,currency:e.target.value}))}/><Inp label="ISIN" placeholder="US0378331005" value={iF.isin} onChange={e=>setIF(f=>({...f,isin:e.target.value.toUpperCase()}))}/><Inp label="Custodio / Broker" value={iF.custodian} onChange={e=>setIF(f=>({...f,custodian:e.target.value}))}/></div>
+    <div style={{marginBottom:14}}>
+      <label style={S.label}>Cuenta contable (para asientos automáticos)</label>
+      <AccountSelect value={iF.accountCode||""} onChange={v=>setIF(f=>({...f,accountCode:v}))} accounts={accounts||[]}/>
+      <div style={{fontSize:10.5,color:C.muted,marginTop:4}}>Selecciona la cuenta de inversiones asociada a este instrumento. Si no existe, créala primero en Plan de Cuentas.</div>
+    </div>
     <Field label="Notas"><textarea style={S.textarea} value={iF.notes} onChange={e=>setIF(f=>({...f,notes:e.target.value}))}/></Field>
     <div style={{display:"flex",gap:10,marginTop:14}}><Btn onClick={saveInst}>Guardar</Btn><Btn v="outline" onClick={()=>{setView("list");setSel(null);setIF(eI);}}>Cancelar</Btn></div>
   </div></div>;
 
   if(view==="move"){ const si=insts.find(x=>x.id===mF.instrumentId); const isIn=mF.type==="compra"||mF.type==="dividendo"||mF.type==="cupon";
+    const montoBase=(parseFloat(mF.qty)||0)*(parseFloat(mF.unitPrice)||0);
+    const fx=parseFloat(mF.fxRate)||(si?.currency==="CLP"?1:rates[si?.currency]||1);
+    const comisionM=montoBase*(parseFloat(mF.comisionPct)||0)/100;
+    const extrasM=(mF.extras||[]).reduce((s,e)=>s+parseFloat(e.monto||0),0);
+    const totalIntermCLP=Math.round(comisionM*fx+extrasM);
     return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>Registrar Movimiento</span></div><div style={S.cBody}>
       {err&&<Msg>{err}</Msg>}
       <div style={{...S.g3,marginBottom:14}}>
@@ -977,10 +1190,29 @@ function InvestmentsSection({rates,userId}){
         <Inp label="Broker" value={mF.broker} onChange={e=>setMF(f=>({...f,broker:e.target.value}))}/>
       </div>
       {mF.instrumentId&&mF.qty&&mF.unitPrice&&<div style={{background:"#f8f6f1",borderRadius:3,padding:"9px 14px",marginBottom:12,fontSize:12.5,display:"flex",gap:22}}>
-        <span>Monto: <b>{fmtNum(parseFloat(mF.qty||0)*parseFloat(mF.unitPrice||0),2)} {si?.currency||""}</b></span>
-        {si&&si.currency!=="CLP"&&<span>CLP: <b>{fmtCLP((parseFloat(mF.qty||0)*parseFloat(mF.unitPrice||0))*(parseFloat(mF.fxRate)||rates[si.currency]||1))}</b></span>}
+        <span>Monto: <b>{fmtNum(montoBase,2)} {si?.currency||""}</b></span>
+        {si&&si.currency!=="CLP"&&<span>CLP: <b>{fmtCLP(montoBase*fx)}</b></span>}
         {!isIn&&<span style={{color:C.muted}}>Pos. actual: <b>{fmtNum(portfolio[mF.instrumentId]?.qty||0,4)}</b></span>}
       </div>}
+
+      {/* Gastos de intermediación */}
+      <div style={{background:"#f8fafc",border:`1px solid ${C.border}`,borderRadius:3,padding:"14px 16px",marginBottom:14}}>
+        <div style={{...S.cTitle,fontSize:11,marginBottom:12,color:C.navy}}>Gastos de Intermediación</div>
+        <div style={{display:"flex",gap:14,marginBottom:10,alignItems:"flex-end"}}>
+          <div style={{width:180}}><Inp label={`Comisión % (${si?.currency||""})`} type="number" min="0" step="0.01" placeholder="0.00" value={mF.comisionPct} onChange={e=>setMF(f=>({...f,comisionPct:e.target.value}))}/></div>
+          {(parseFloat(mF.comisionPct)||0)>0&&<div style={{paddingBottom:2,fontSize:12.5,color:C.muted}}>= {fmtNum(comisionM,2)} {si?.currency||""} ≈ {fmtCLP(comisionM*fx)}</div>}
+        </div>
+        <div style={{marginBottom:8}}>
+          {(mF.extras||[]).map((ex,i)=><div key={i} style={{display:"flex",gap:10,marginBottom:8,alignItems:"flex-end"}}>
+            <div style={{flex:2}}><Inp label={i===0?"Descripción (CLP)":""} placeholder="Custodia, impuesto…" value={ex.desc} onChange={e=>setMF(f=>({...f,extras:f.extras.map((x,j)=>j===i?{...x,desc:e.target.value}:x)}))}/></div>
+            <div style={{width:140}}><Inp label={i===0?"Monto CLP":""} type="number" min="0" value={ex.monto} onChange={e=>setMF(f=>({...f,extras:f.extras.map((x,j)=>j===i?{...x,monto:e.target.value}:x)}))}/></div>
+            <button style={{...S.bsm("transparent",C.danger),marginBottom:2}} onClick={()=>setMF(f=>({...f,extras:f.extras.filter((_,j)=>j!==i)}))}>✕</button>
+          </div>)}
+          <Btn sm v="outline" onClick={()=>setMF(f=>({...f,extras:[...(f.extras||[]),{desc:"",monto:""}]}))}>+ Agregar gasto</Btn>
+        </div>
+        {totalIntermCLP>0&&<div style={{background:"#fef9c3",borderRadius:3,padding:"6px 12px",fontSize:12,color:C.amber,fontWeight:700}}>Total intermediación: {fmtCLP(totalIntermCLP)}</div>}
+      </div>
+
       <Inp label="Referencia" value={mF.ref} onChange={e=>setMF(f=>({...f,ref:e.target.value}))}/>
       <div style={{display:"flex",gap:10,marginTop:14}}><Btn onClick={saveMov}>Guardar</Btn><Btn v="outline" onClick={()=>setView(sel?"detail":"list")}>Cancelar</Btn></div>
     </div></div>; }
@@ -1084,7 +1316,7 @@ function InvestmentsSection({rates,userId}){
 // ════════════════════════════════════════════════════════════════
 //  INVENTORY SECTION
 // ════════════════════════════════════════════════════════════════
-function InventorySection({rates,userId}){
+function InventorySection({rates,userId,accounts,entries,setEntries}){
   const [products,setProducts]=useState(()=>lsLoad("ac_inv_prods",[]));
   const [movs,setMovs]=useState(()=>lsLoad("ac_inv_movs",[]));
   const [mkt,setMkt]=useState(()=>lsLoad("ac_inv_mktprice",{}));
@@ -1102,8 +1334,19 @@ function InventorySection({rates,userId}){
     });
   },[userId]);
 
-  const eP={code:"",name:"",unit:"unidad",currency:"CLP",notes:""};
-  const eM={productId:"",type:"compra",date:today(),qty:"",unitCost:"",unitPrice:"",ref:"",notes:""};
+  // ── Generar asiento contable ──
+  async function createEntry({date,description,entryRows}){
+    const totalD=entryRows.reduce((s,r)=>s+r.debit,0);
+    const totalC=entryRows.reduce((s,r)=>s+r.credit,0);
+    const cur=lsLoad("ac_entries",[]);
+    const n=cur.length+1;
+    const e={id:genId(),number:n,date,description,reference:"Auto-Inventario",rows:entryRows,totalDebit:totalD,totalCredit:totalC,createdAt:new Date().toISOString()};
+    const updated=[...cur,e]; setEntries(updated); await dbUpsertEntry(userId,e,updated);
+  }
+
+  const eP={code:"",name:"",unit:"unidad",currency:"CLP",notes:"",accountCode:""};
+  const eM={productId:"",type:"compra",date:today(),qty:"",unitCost:"",unitPrice:"",ref:"",notes:"",
+    comisionPct:"",extras:[]}; // extras: [{desc,monto}]
   const eMk={productId:"",date:today(),price:"",source:""};
   const [pF,setPF]=useState(eP); const [mF,setMF]=useState(eM); const [mkF,setMkF]=useState(eMk);
 
@@ -1128,17 +1371,79 @@ function InventorySection({rates,userId}){
     const u=[...products,prod]; setProducts(u); dbUpsert("ac_inv_products",userId,prod,"ac_inv_prods",u);
     setMsg({ok:true,text:`"${pF.name}" creado.`}); setView("list");setPF(eP);setTimeout(()=>setMsg(null),3000);
   }
-  function saveMov(){
+
+  async function saveMov(){
     setErr(""); const qty=parseFloat(mF.qty),cost=parseFloat(mF.unitCost);
     if(!mF.productId) return setErr("Selecciona producto."); if(!qty||qty<=0) return setErr("Cantidad inválida.");
     const isIn=mF.type==="compra"||mF.type==="entrada";
+    const isOut=mF.type==="venta"||mF.type==="salida";
     if(isIn&&(!cost||cost<0)) return setErr("Costo requerido.");
     const st=inventoryState[mF.productId]||{};
-    if(!isIn&&qty>st.qty) return setErr(`Stock insuficiente: ${fmtNum(st.qty,4)}`);
-    const m={id:genId(),...mF,qty,unitCost:parseFloat(mF.unitCost)||0,unitPrice:parseFloat(mF.unitPrice)||0,createdAt:new Date().toISOString()};
+    if(isOut&&qty>st.qty) return setErr(`Stock insuficiente: ${fmtNum(st.qty,4)}`);
+
+    // Calcular intermediación
+    const montoBase=qty*(isIn?cost:parseFloat(mF.unitPrice)||0);
+    const comisionMonto=montoBase*(parseFloat(mF.comisionPct)||0)/100;
+    const extrasMonto=(mF.extras||[]).reduce((s,e)=>s+parseFloat(e.monto||0),0);
+    const totalInterm=Math.round(comisionMonto+extrasMonto);
+
+    const m={id:genId(),...mF,qty,unitCost:parseFloat(mF.unitCost)||0,unitPrice:parseFloat(mF.unitPrice)||0,
+      comisionPct:parseFloat(mF.comisionPct)||0,totalInterm,extras:mF.extras||[],
+      createdAt:new Date().toISOString()};
     const u=[...movs,m]; setMovs(u); dbUpsert("ac_inv_product_movs",userId,m,"ac_inv_movs",u);
-    setMsg({ok:true,text:"Movimiento registrado."}); setView(sel?"detail":"list");setMF(eM);setTimeout(()=>setMsg(null),3000);
+
+    // ── Asientos contables ──
+    const prod=products.find(x=>x.id===mF.productId);
+    const accCode=prod?.accountCode;
+    const montoCLP=Math.round(montoBase);
+    const costoTotalCLP=Math.round(qty*st.avgCost);
+
+    if(accCode && montoCLP>0){
+      const nombre=prod.name;
+      if(mF.type==="compra"){
+        // Débito inventario / Crédito banco
+        const rows=[
+          {id:genId(),account:accCode,debit:montoCLP,credit:0},
+          {id:genId(),account:"1110",debit:0,credit:montoCLP},
+        ];
+        // Intermediación va al costo del inventario (capitalizada)
+        if(totalInterm>0) rows.push({id:genId(),account:accCode,debit:totalInterm,credit:0},{id:genId(),account:"1110",debit:0,credit:totalInterm});
+        // Agrupar débitos del mismo acc
+        const grouped={}; rows.forEach(r=>{if(!grouped[r.account])grouped[r.account]={debit:0,credit:0};grouped[r.account].debit+=r.debit;grouped[r.account].credit+=r.credit;});
+        const finalRows=Object.entries(grouped).flatMap(([acc,v])=>{const out=[];if(v.debit>0)out.push({id:genId(),account:acc,debit:v.debit,credit:0});if(v.credit>0)out.push({id:genId(),account:acc,debit:0,credit:v.credit});return out;});
+        await createEntry({date:mF.date,description:`Compra ${qty} ${nombre} @ ${fmtNum(cost,2)}${totalInterm>0?` + interm. ${fmtCLP(totalInterm)}`:""}`,entryRows:finalRows});
+      } else if(mF.type==="venta"){
+        const gpCLP=montoCLP-costoTotalCLP;
+        const rows=[];
+        rows.push({id:genId(),account:"1110",debit:montoCLP,credit:0}); // banco
+        rows.push({id:genId(),account:"5100",debit:costoTotalCLP,credit:0}); // costo ventas
+        rows.push({id:genId(),account:accCode,debit:0,credit:costoTotalCLP}); // baja inventario
+        rows.push({id:genId(),account:"4100",debit:0,credit:montoCLP}); // ingreso ventas
+        // Intermediación es gasto
+        if(totalInterm>0){
+          rows.push({id:genId(),account:"5310",debit:totalInterm,credit:0});
+          rows.push({id:genId(),account:"1110",debit:0,credit:totalInterm});
+        }
+        await createEntry({date:mF.date,description:`Venta ${qty} ${nombre} @ ${fmtNum(parseFloat(mF.unitPrice)||0,2)}${totalInterm>0?` − interm. ${fmtCLP(totalInterm)}`:""}`,entryRows:rows});
+      } else if(mF.type==="salida"){
+        // Merma/ajuste: baja inventario contra gasto
+        await createEntry({date:mF.date,description:`Merma/salida ${qty} ${nombre}`,entryRows:[
+          {id:genId(),account:"5100",debit:costoTotalCLP,credit:0},
+          {id:genId(),account:accCode,debit:0,credit:costoTotalCLP},
+        ]});
+      } else if(mF.type==="entrada"){
+        // Devolución: sube inventario desde ingreso
+        await createEntry({date:mF.date,description:`Devolución/entrada ${qty} ${nombre}`,entryRows:[
+          {id:genId(),account:accCode,debit:montoCLP,credit:0},
+          {id:genId(),account:"4110",debit:0,credit:montoCLP},
+        ]});
+      }
+    }
+
+    setMsg({ok:true,text:`Movimiento registrado.${accCode?" Asiento generado.":""}`});
+    setView(sel?"detail":"list");setMF(eM);setTimeout(()=>setMsg(null),4000);
   }
+
   function saveMk(){
     setErr(""); if(!mkF.productId) return setErr("Selecciona producto.");
     const price=parseFloat(mkF.price); if(isNaN(price)||price<0) return setErr("Precio inválido.");
@@ -1154,19 +1459,34 @@ function InventorySection({rates,userId}){
     const mk2={...mkt};delete mk2[id];setMkt(mk2);lsSave("ac_inv_mktprice",mk2);
     if(sel?.id===id){setSel(null);setView("list");}
   }
+
   if(view==="newProd") return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>Nuevo Producto</span></div><div style={S.cBody}>
     {err&&<Msg>{err}</Msg>}
-    <div style={{...S.g4,marginBottom:14}}><Inp label="Código *" placeholder="PROD-001" value={pF.code} onChange={e=>setPF(f=>({...f,code:e.target.value}))}/><Inp label="Nombre *" value={pF.name} onChange={e=>setPF(f=>({...f,name:e.target.value}))}/><Inp label="Unidad" placeholder="unidad, kg, litro" value={pF.unit} onChange={e=>setPF(f=>({...f,unit:e.target.value}))}/><Sel label="Moneda" options={CURRENCIES} value={pF.currency} onChange={e=>setPF(f=>({...f,currency:e.target.value}))}/></div>
+    <div style={{...S.g4,marginBottom:14}}>
+      <Inp label="Código *" placeholder="PROD-001" value={pF.code} onChange={e=>setPF(f=>({...f,code:e.target.value}))}/>
+      <Inp label="Nombre *" value={pF.name} onChange={e=>setPF(f=>({...f,name:e.target.value}))}/>
+      <Inp label="Unidad" placeholder="unidad, kg, litro" value={pF.unit} onChange={e=>setPF(f=>({...f,unit:e.target.value}))}/>
+      <Sel label="Moneda" options={CURRENCIES} value={pF.currency} onChange={e=>setPF(f=>({...f,currency:e.target.value}))}/>
+    </div>
+    <div style={{marginBottom:14}}>
+      <label style={S.label}>Cuenta contable (para asientos automáticos)</label>
+      <AccountSelect value={pF.accountCode||""} onChange={v=>setPF(f=>({...f,accountCode:v}))} accounts={accounts||[]}/>
+      <div style={{fontSize:10.5,color:C.muted,marginTop:4}}>Cuenta de inventario de este producto. Ej: 1300 Inventario de Mercaderías.</div>
+    </div>
     <Field label="Notas"><textarea style={S.textarea} value={pF.notes} onChange={e=>setPF(f=>({...f,notes:e.target.value}))}/></Field>
     <div style={{display:"flex",gap:10,marginTop:14}}><Btn onClick={saveProd}>Crear</Btn><Btn v="outline" onClick={()=>{setView("list");setPF(eP);}}>Cancelar</Btn></div>
   </div></div>;
 
   if(view==="move"){ const sp=products.find(x=>x.id===mF.productId);const isIn=mF.type==="compra"||mF.type==="entrada";
+    const montoBase=(parseFloat(mF.qty)||0)*parseFloat(isIn?mF.unitCost:mF.unitPrice||0);
+    const comisionM=montoBase*(parseFloat(mF.comisionPct)||0)/100;
+    const extrasM=(mF.extras||[]).reduce((s,e)=>s+parseFloat(e.monto||0),0);
+    const totalInterm=comisionM+extrasM;
     return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>Registrar Movimiento</span></div><div style={S.cBody}>
       {err&&<Msg>{err}</Msg>}
       <div style={{...S.g3,marginBottom:14}}>
         <Field label="Producto *"><select style={S.select} value={mF.productId} onChange={e=>setMF(f=>({...f,productId:e.target.value}))}><option value="">Seleccionar…</option>{products.map(p=><option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}</select></Field>
-        <Sel label="Tipo *" options={[{v:"compra",l:"Compra"},{v:"venta",l:"Venta"},{v:"entrada",l:"Entrada (ajuste)"},{v:"salida",l:"Salida (ajuste)"}]} value={mF.type} onChange={e=>setMF(f=>({...f,type:e.target.value}))}/>
+        <Sel label="Tipo *" options={[{v:"compra",l:"Compra"},{v:"venta",l:"Venta"},{v:"entrada",l:"Entrada/Devolución"},{v:"salida",l:"Salida/Merma"}]} value={mF.type} onChange={e=>setMF(f=>({...f,type:e.target.value}))}/>
         <Inp label="Fecha *" type="date" value={mF.date} onChange={e=>setMF(f=>({...f,date:e.target.value}))}/>
       </div>
       <div style={{...S.g4,marginBottom:14}}>
@@ -1176,6 +1496,30 @@ function InventorySection({rates,userId}){
         <Inp label="Referencia" value={mF.ref} onChange={e=>setMF(f=>({...f,ref:e.target.value}))}/>
       </div>
       {mF.productId&&!isIn&&<div style={{background:"#f8f6f1",borderRadius:3,padding:"9px 14px",marginBottom:12,fontSize:12.5}}>Stock: <b>{fmtNum(inventoryState[mF.productId]?.qty||0,4)}</b> — CP: <b>{fmtNum(inventoryState[mF.productId]?.avgCost||0,4)}</b></div>}
+
+      {/* Gastos de intermediación */}
+      <div style={{background:"#f8fafc",border:`1px solid ${C.border}`,borderRadius:3,padding:"14px 16px",marginBottom:14}}>
+        <div style={{...S.cTitle,fontSize:11,marginBottom:12,color:C.navy}}>Gastos de Intermediación</div>
+        <div style={{display:"flex",gap:14,marginBottom:10,alignItems:"flex-end"}}>
+          <div style={{width:180}}><Inp label="Comisión %" type="number" min="0" step="0.01" placeholder="0.00" value={mF.comisionPct} onChange={e=>setMF(f=>({...f,comisionPct:e.target.value}))}/></div>
+          {(parseFloat(mF.comisionPct)||0)>0&&<div style={{paddingBottom:2,fontSize:12.5,color:C.muted}}>= {fmtCLP(comisionM)}</div>}
+        </div>
+        <div style={{marginBottom:8}}>
+          {(mF.extras||[]).map((ex,i)=><div key={i} style={{display:"flex",gap:10,marginBottom:8,alignItems:"flex-end"}}>
+            <div style={{flex:2}}><Inp label={i===0?"Descripción":""} placeholder="Flete, seguro…" value={ex.desc} onChange={e=>setMF(f=>({...f,extras:f.extras.map((x,j)=>j===i?{...x,desc:e.target.value}:x)}))}/></div>
+            <div style={{width:140}}><Inp label={i===0?"Monto CLP":""} type="number" min="0" value={ex.monto} onChange={e=>setMF(f=>({...f,extras:f.extras.map((x,j)=>j===i?{...x,monto:e.target.value}:x)}))}/></div>
+            <button style={{...S.bsm("transparent",C.danger),marginBottom:2}} onClick={()=>setMF(f=>({...f,extras:f.extras.filter((_,j)=>j!==i)}))}>✕</button>
+          </div>)}
+          <Btn sm v="outline" onClick={()=>setMF(f=>({...f,extras:[...(f.extras||[]),{desc:"",monto:""}]}))}>+ Agregar gasto</Btn>
+        </div>
+        {totalInterm>0&&<div style={{background:"#fef9c3",borderRadius:3,padding:"6px 12px",fontSize:12,color:C.amber,fontWeight:700}}>Total intermediación: {fmtCLP(totalInterm)}</div>}
+      </div>
+
+      {montoBase>0&&<div style={{background:"#f8f6f1",borderRadius:3,padding:"9px 14px",marginBottom:12,fontSize:12.5,display:"flex",gap:22}}>
+        <span>Monto base: <b>{fmtCLP(montoBase)}</b></span>
+        {totalInterm>0&&<span>Intermediación: <b style={{color:C.danger}}>{fmtCLP(totalInterm)}</b></span>}
+        <span>Total: <b>{fmtCLP(montoBase+(isIn?totalInterm:0))}</b></span>
+      </div>}
       <div style={{display:"flex",gap:10,marginTop:14}}><Btn onClick={saveMov}>Guardar</Btn><Btn v="outline" onClick={()=>setView(sel?"detail":"list")}>Cancelar</Btn></div>
     </div></div>; }
 
@@ -1190,11 +1534,15 @@ function InventorySection({rates,userId}){
     <div style={{display:"flex",gap:10,marginTop:14}}><Btn onClick={saveMk}>Guardar</Btn><Btn v="outline" onClick={()=>setView(sel?"detail":"list")}>Cancelar</Btn></div>
   </div></div>;
 
-
-    if(view==="detail"&&sel){ const p=products.find(x=>x.id===sel.id)||sel,st=inventoryState[p.id]||{},mk2=latestMkt(p.id),mktH=mkt[p.id]||[],pMovs=movs.filter(m=>m.productId===p.id).sort((a,b)=>b.date.localeCompare(a.date)),unrl=mk2?(mk2.price-st.avgCost)*st.qty:null;
+  if(view==="detail"&&sel){ const p=products.find(x=>x.id===sel.id)||sel,st=inventoryState[p.id]||{},mk2=latestMkt(p.id),mktH=mkt[p.id]||[],pMovs=movs.filter(m=>m.productId===p.id).sort((a,b)=>b.date.localeCompare(a.date)),unrl=mk2?(mk2.price-st.avgCost)*st.qty:null;
     return <div>
       <div style={{display:"flex",gap:10,marginBottom:16}}><Btn v="outline" onClick={()=>setView("list")}>← Volver</Btn><Btn onClick={()=>{setMF({...eM,productId:p.id});setView("move");}}>+ Movimiento</Btn><Btn v="gold" onClick={()=>{setMkF({...eMk,productId:p.id});setView("market");}}>📈 Precio mercado</Btn><Btn v="danger" onClick={()=>delProd(p.id)}>Eliminar</Btn></div>
-      <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>{p.code} — {p.name}</span><span style={{color:"#94a3b8",fontSize:11}}>{p.unit} · {p.currency}</span></div>
+      <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>{p.code} — {p.name}</span>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          {p.accountCode&&<span style={{fontSize:11,color:C.gold}}>⚖ {p.accountCode}</span>}
+          <span style={{color:"#94a3b8",fontSize:11}}>{p.unit} · {p.currency}</span>
+        </div>
+      </div>
         <div style={S.cBody}>
           <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:12,marginBottom:16}}>
             {[{label:"Stock actual",v:`${fmtNum(st.qty,4)} ${p.unit}`,r:st.qty<=0},{label:"Costo promedio",v:`${fmtNum(st.avgCost,4)} ${p.currency}`},{label:"Valor libro",v:`${fmtNum(st.totalCost,2)} ${p.currency}`,bold:true},{label:"Precio mercado",v:mk2?`${fmtNum(mk2.price,4)} ${p.currency}`:"—"},{label:"G/P no realiz.",v:unrl!=null?`${unrl>=0?"+":""}${fmtNum(unrl,2)}`:"—",g:unrl>=0,r:unrl<0}].map((s,i)=><div key={i} style={{...S.stat,borderTopColor:s.r?C.danger:s.g?C.green:C.gold}}><div style={S.sLbl}>{s.label}</div><div style={{...S.sVal,fontSize:14,color:s.r?C.danger:s.g?C.green:C.navy}}>{s.v}</div></div>)}
@@ -1212,13 +1560,14 @@ function InventorySection({rates,userId}){
           <div style={{...S.cTitle,marginBottom:10,color:C.navy}}>Movimientos</div>
           {pMovs.length===0?<div style={S.empty}><div style={{color:C.muted}}>Sin movimientos</div></div>
           :<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-            <thead><tr>{["Fecha","Tipo","Cant.","Costo unit.","Precio vta.","Margen","Ref."].map((h,i)=><th key={i} style={{...S.th,textAlign:i>=2&&i<=5?"right":"left"}}>{h}</th>)}</tr></thead>
+            <thead><tr>{["Fecha","Tipo","Cant.","Costo unit.","Precio vta.","Intermediación","Margen","Ref."].map((h,i)=><th key={i} style={{...S.th,textAlign:i>=2&&i<=6?"right":"left"}}>{h}</th>)}</tr></thead>
             <tbody>{pMovs.map((m2,i)=>{const isIn=m2.type==="compra"||m2.type==="entrada";const margin=m2.unitPrice&&m2.unitCost?((m2.unitPrice-m2.unitCost)/m2.unitCost*100):null;return<tr key={i} style={{background:i%2===0?"#fafaf9":"#fff"}}>
               <td style={S.td}>{fmtDate(m2.date)}</td>
               <td style={S.td}><span style={{background:isIn?C.greenBg:C.redBg,color:isIn?C.green:C.danger,padding:"1px 7px",borderRadius:12,fontSize:10,fontWeight:700,textTransform:"uppercase"}}>{m2.type}</span></td>
               <td style={{...S.td,textAlign:"right",fontWeight:700}}>{isIn?"+":"-"}{fmtNum(m2.qty,4)}</td>
               <td style={{...S.td,textAlign:"right"}}>{m2.unitCost>0?fmtNum(m2.unitCost,4):"—"}</td>
               <td style={{...S.td,textAlign:"right"}}>{m2.unitPrice>0?fmtNum(m2.unitPrice,4):"—"}</td>
+              <td style={{...S.td,textAlign:"right",color:C.danger}}>{m2.totalInterm>0?fmtCLP(m2.totalInterm):"—"}</td>
               <td style={{...S.td,textAlign:"right",color:margin>=0?C.green:C.danger}}>{margin!=null?`${margin.toFixed(1)}%`:"—"}</td>
               <td style={{...S.td,fontSize:11,color:C.muted}}>{m2.ref||"—"}</td>
             </tr>;})}</tbody>
@@ -1238,7 +1587,8 @@ function InventorySection({rates,userId}){
       <DataTable cols={[
         {label:"Código",fn:p=><code style={{fontSize:11,background:"#f1f5f9",padding:"2px 6px",borderRadius:3}}>{p.code}</code>},
         {label:"Nombre",fn:p=><b style={{cursor:"pointer",fontFamily:"'Georgia',serif"}} onClick={()=>{setSel(p);setView("detail");}}>{p.name}</b>},
-        {label:"Unidad",key:"unit"},{label:"Mon.",key:"currency"},
+        {label:"Cuenta",fn:p=>p.accountCode?<code style={{fontSize:10,background:"#f1f5f9",padding:"1px 5px",borderRadius:3}}>{p.accountCode}</code>:<span style={{color:C.muted,fontSize:10}}>—</span>},
+        {label:"Unidad",key:"unit"},
         {label:"Stock",r:true,fn:p=><span style={{fontWeight:700,color:(inventoryState[p.id]?.qty||0)<=0?C.danger:C.navy}}>{fmtNum(inventoryState[p.id]?.qty||0,4)}</span>},
         {label:"Costo prom.",r:true,fn:p=><span>{fmtNum(inventoryState[p.id]?.avgCost||0,4)}</span>},
         {label:"Valor libro",r:true,fn:p=><b style={{fontFamily:"'Georgia',serif"}}>{fmtNum(inventoryState[p.id]?.totalCost||0,2)}</b>},
@@ -1431,9 +1781,9 @@ export default function App(){
         {section==="accounting"&&accTab==="entries"  &&<EntriesTab   accounts={accounts} entries={entries} setEntries={setEntries} userId={uid}/>}
         {section==="accounting"&&accTab==="reports"  &&<ReportsTab   accounts={accounts} entries={entries}/>}
         {section==="accounting"&&accTab==="accounts" &&<AccountsTab  accounts={accounts} setAccounts={setAccounts} userId={uid}/>}
-        {section==="liabilities"&&<LiabilitiesSection rates={rates} userId={uid}/>}
-        {section==="investments"&&<InvestmentsSection  rates={rates} userId={uid}/>}
-        {section==="inventory"  &&<InventorySection    rates={rates} userId={uid}/>}
+        {section==="liabilities"&&<LiabilitiesSection rates={rates} userId={uid} accounts={accounts} entries={entries} setEntries={setEntries}/>}
+        {section==="investments"&&<InvestmentsSection  rates={rates} userId={uid} accounts={accounts} entries={entries} setEntries={setEntries}/>}
+        {section==="inventory"  &&<InventorySection    rates={rates} userId={uid} accounts={accounts} entries={entries} setEntries={setEntries}/>}
         {section==="fixed"      &&<FixedAssetsSection  rates={rates} userId={uid}/>}
       </main>
     </div>
