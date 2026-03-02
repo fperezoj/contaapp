@@ -751,40 +751,62 @@ function ReportsTab({accounts,entries}){
         <span style={S.cTitle}>Estado de Resultados — {eerrLabel}</span>
         <span style={{fontSize:11,color:C.gold}}>{eerrEntries.length} asientos</span>
       </div>
-      <div style={S.cBody}><div style={{maxWidth:620}}>
+      <div style={S.cBody}><div style={{maxWidth:660}}>
         {income.length===0&&expenses.length===0&&<div style={{...S.empty,padding:20}}><div style={{color:C.muted}}>Sin movimientos de resultado en el período seleccionado.</div></div>}
+
+        {/* Ingresos — contribución positiva */}
         {income.length>0&&<>
-          <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.muted,marginBottom:12,paddingBottom:8,borderBottom:`1px solid ${C.border}`}}>Ingresos</div>
-          {income.map(r=><div key={r.code} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
-            <span style={{fontFamily:"'Georgia',serif",display:"flex",gap:8,alignItems:"center"}}>
-              <code style={{fontSize:10,color:C.muted}}>{r.code}</code>{r.name}
+          <div style={{fontSize:10,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.muted,marginBottom:8,paddingBottom:6,borderBottom:`1px solid ${C.border}`}}>Ingresos</div>
+          {income.map(r=>{
+            const monto=r.credit-r.debit; // positivo = ingreso neto
+            return <div key={r.code} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
+              <span style={{fontFamily:"'Georgia',serif",display:"flex",gap:8,alignItems:"center"}}>
+                <code style={{fontSize:10,color:C.muted,minWidth:36}}>{r.code}</code>{r.name}
+              </span>
+              <span style={{fontWeight:700,color:monto>=0?C.green:C.danger,minWidth:130,textAlign:"right"}}>
+                {monto>=0?"+":""}{fmtCLP(monto)}
+              </span>
+            </div>;
+          })}
+          <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:`2px solid ${C.navy}`,marginTop:4,marginBottom:18}}>
+            <span style={{fontWeight:700,fontSize:11,letterSpacing:1,textTransform:"uppercase"}}>Total Ingresos</span>
+            <span style={{fontWeight:700,fontSize:15,color:totInc>=0?C.green:C.danger,minWidth:130,textAlign:"right"}}>
+              {totInc>=0?"+":""}{fmtCLP(totInc)}
             </span>
-            <span style={{fontWeight:700,color:C.green}}>{fmtCLP(r.credit-r.debit)}</span>
-          </div>)}
-          <div style={{display:"flex",justifyContent:"space-between",padding:"11px 0",borderBottom:`2px solid ${C.navy}`,marginTop:4,marginBottom:20}}>
-            <span style={{fontWeight:700,fontSize:12,letterSpacing:1,textTransform:"uppercase"}}>Total Ingresos</span>
-            <span style={{fontWeight:700,fontSize:16,color:C.green}}>{fmtCLP(totInc)}</span>
           </div>
         </>}
+
+        {/* Gastos — contribución negativa al resultado */}
         {expenses.length>0&&<>
-          <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.muted,marginBottom:12,paddingBottom:8,borderBottom:`1px solid ${C.border}`}}>Gastos</div>
-          {expenses.map(r=><div key={r.code} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
-            <span style={{fontFamily:"'Georgia',serif",display:"flex",gap:8,alignItems:"center"}}>
-              <code style={{fontSize:10,color:C.muted}}>{r.code}</code>{r.name}
+          <div style={{fontSize:10,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.muted,marginBottom:8,paddingBottom:6,borderBottom:`1px solid ${C.border}`}}>Gastos</div>
+          {expenses.map(r=>{
+            const monto=-(r.debit-r.credit); // negativo = reduce resultado
+            return <div key={r.code} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
+              <span style={{fontFamily:"'Georgia',serif",display:"flex",gap:8,alignItems:"center"}}>
+                <code style={{fontSize:10,color:C.muted,minWidth:36}}>{r.code}</code>{r.name}
+              </span>
+              <span style={{fontWeight:700,color:monto<0?C.danger:C.green,minWidth:130,textAlign:"right"}}>
+                {monto>=0?"+":""}{fmtCLP(monto)}
+              </span>
+            </div>;
+          })}
+          <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:`2px solid ${C.navy}`,marginTop:4,marginBottom:18}}>
+            <span style={{fontWeight:700,fontSize:11,letterSpacing:1,textTransform:"uppercase"}}>Total Gastos</span>
+            <span style={{fontWeight:700,fontSize:15,color:C.danger,minWidth:130,textAlign:"right"}}>
+              -{fmtCLP(totExp)}
             </span>
-            <span style={{fontWeight:700,color:C.danger}}>{fmtCLP(r.debit-r.credit)}</span>
-          </div>)}
-          <div style={{display:"flex",justifyContent:"space-between",padding:"11px 0",borderBottom:`2px solid ${C.navy}`,marginTop:4,marginBottom:20}}>
-            <span style={{fontWeight:700,fontSize:12,letterSpacing:1,textTransform:"uppercase"}}>Total Gastos</span>
-            <span style={{fontWeight:700,fontSize:16,color:C.danger}}>{fmtCLP(totExp)}</span>
           </div>
         </>}
+
+        {/* Resultado neto */}
         {(income.length>0||expenses.length>0)&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"18px 24px",background:netResult>=0?C.greenBg:C.redBg,border:`1px solid ${netResult>=0?C.green:C.danger}`,borderRadius:4}}>
           <div>
             <div style={{fontWeight:700,fontSize:13,fontFamily:"'Georgia',serif"}}>Resultado del Ejercicio</div>
             <div style={{fontSize:10,color:C.muted,marginTop:2}}>{eerrLabel}</div>
           </div>
-          <span style={{fontWeight:700,fontSize:26,color:netResult>=0?C.green:C.danger}}>{netResult>=0?"+":""}{fmtCLP(netResult)}</span>
+          <span style={{fontWeight:700,fontSize:26,color:netResult>=0?C.green:C.danger}}>
+            {netResult>=0?"+":""}{fmtCLP(netResult)}
+          </span>
         </div>}
       </div></div>
     </div>}
