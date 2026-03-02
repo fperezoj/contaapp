@@ -2595,6 +2595,7 @@ function CierreMensualSection({entries, setEntries, userId, entityId, accounts})
   const [preview, setPreview]     = useState(null);   // [{counterparty, saldo, reajuste}]
   const [generating, setGenerating] = useState(false);
   const [msg, setMsg]             = useState(null);
+  const [ipcManual, setIpcManual] = useState("");  // fallback manual input
 
   // All months that have entries
   const allMonths = useMemo(()=>[...new Set(entries.map(e=>e.date.slice(0,7)))].sort(),[entries]);
@@ -2614,6 +2615,7 @@ function CierreMensualSection({entries, setEntries, userId, entityId, accounts})
       setIpc({valor:entry.valor, fecha:entry.fecha?.slice(0,10)});
     } catch(e){
       setIpcError(e.message||"Error al obtener IPC");
+      setIpcManual(""); // reset manual on new error
     } finally {
       setIpcLoading(false);
     }
@@ -2713,7 +2715,7 @@ function CierreMensualSection({entries, setEntries, userId, entityId, accounts})
     {/* ── Header ── */}
     <StatGrid stats={[
       {label:"Mes seleccionado",  value:selMonth?new Date(selMonth+"-15").toLocaleDateString("es-CL",{month:"long",year:"numeric"}):"—"},
-      {label:"IPC del mes",       value:ipcLoading?"…":ipcError?"Error":fmtPct(ipc?.valor)},
+      {label:"IPC del mes",       value:ipcLoading?"…":!ipc?"Sin dato":fmtPct(ipc.valor)+(ipc.manual?" (manual)":"")},
       {label:"Contrapartes 1630", value:balancesByCP.length},
       {label:"Saldo total 1630",  value:fmtCLP(balancesByCP.reduce((s,v)=>s+v.saldo,0))},
     ]}/>
@@ -2732,22 +2734,57 @@ function CierreMensualSection({entries, setEntries, userId, entityId, accounts})
 
         {/* IPC status */}
         <div style={{flex:"0 0 240px"}}>
-          <label style={S.label}>IPC obtenido (mindicador.cl)</label>
-          <div style={{...S.input,background:"#f8f6f1",display:"flex",alignItems:"center",gap:8,cursor:"default"}}>
-            {ipcLoading&&<span style={{color:C.muted,fontSize:12}}>Consultando…</span>}
-            {ipcError&&<span style={{color:C.danger,fontSize:12}}>⚠ {ipcError}</span>}
-            {ipc&&!ipcLoading&&<>
+          <label style={S.label}>
+            IPC del mes&nbsp;
+            <a href="https://www.ine.gob.cl/estadisticas/macro/inflacion/ipc" target="_blank" rel="noreferrer"
+              style={{fontSize:9,color:C.gold,fontWeight:400,textDecoration:"none"}}>
+              ver INE ↗
+            </a>
+          </label>
+          {/* Loaded OK */}
+          {ipc&&!ipcLoading&&!ipcError&&(
+            <div style={{...S.input,background:"#f0fdf4",display:"flex",alignItems:"center",gap:8,cursor:"default"}}>
               <span style={{fontWeight:700,fontSize:15,color:ipc.valor>0?C.green:ipc.valor<0?C.danger:C.muted}}>{fmtPct(ipc.valor)}</span>
-              <span style={{fontSize:10,color:C.muted}}>publicado {fmtDate(ipc.fecha)}</span>
-            </>}
-          </div>
+              <span style={{fontSize:10,color:C.muted}}>mindicador.cl · {fmtDate(ipc.fecha)}</span>
+              <button onClick={()=>{setIpc(null);setIpcError("Ingresado manualmente");}}
+                style={{marginLeft:"auto",background:"none",border:"none",color:C.muted,fontSize:10,cursor:"pointer"}} title="Editar manualmente">✎</button>
+            </div>
+          )}
+          {/* Loading */}
+          {ipcLoading&&(
+            <div style={{...S.input,background:"#f8f6f1",color:C.muted,fontSize:12}}>Consultando mindicador.cl…</div>
+          )}
+          {/* Error or manual mode */}
+          {!ipc&&!ipcLoading&&(
+            <div>
+              {ipcError&&<div style={{fontSize:10.5,color:C.danger,marginBottom:5}}>⚠ {ipcError} — ingresa manualmente:</div>}
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <input
+                  style={{...S.input,width:90,textAlign:"right"}}
+                  type="number" step="0.01" placeholder="ej: 0.4"
+                  value={ipcManual}
+                  onChange={e=>setIpcManual(e.target.value)}
+                />
+                <span style={{fontSize:12,color:C.muted}}>%</span>
+                <Btn sm onClick={()=>{
+                  const v=parseFloat(ipcManual);
+                  if(isNaN(v)) return;
+                  setIpc({valor:v, fecha:selMonth+"-01", manual:true});
+                  setIpcError(null);
+                }} disabled={!ipcManual}>Aplicar</Btn>
+              </div>
+              <div style={{fontSize:9.5,color:C.muted,marginTop:4}}>
+                Consulta el valor en <a href="https://www.ine.gob.cl/estadisticas/macro/inflacion/ipc" target="_blank" rel="noreferrer" style={{color:C.gold}}>ine.gob.cl ↗</a>
+              </div>
+            </div>
+          )}
         </div>
 
         <div style={{display:"flex",gap:8,alignItems:"flex-end"}}>
           <Btn onClick={computePreview} disabled={!ipc||ipcLoading||balancesByCP.length===0}>
             Vista previa
           </Btn>
-          {ipcError&&<Btn v="outline" onClick={()=>fetchIPC(selMonth)}>↻ Reintentar IPC</Btn>}
+          {!ipc&&!ipcLoading&&<Btn v="outline" onClick={()=>fetchIPC(selMonth)}>↻ Reintentar API</Btn>}
         </div>
       </div>
 
