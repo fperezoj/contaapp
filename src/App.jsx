@@ -539,19 +539,53 @@ function EntriesTab({accounts,entries,setEntries,userId,entityId}){
 
 // ── Reports ──
 function ReportsTab({accounts,entries}){
-  const [type,setType]=useState("balance"); const [month,setMonth]=useState("");
+  const [type,setType]=useState("balance");
   const accMap=useMemo(()=>Object.fromEntries(accounts.map(a=>[a.code,a])),[accounts]);
-  const months=useMemo(()=>[...new Set(entries.map(e=>e.date.slice(0,7)))].sort().reverse(),[entries]);
-  const filtered=useMemo(()=>month?entries.filter(e=>e.date.startsWith(month)):entries,[entries,month]);
 
+  // All available years and months
+  const allYears=useMemo(()=>[...new Set(entries.map(e=>e.date.slice(0,4)))].sort(),[entries]);
+  const allMonths=useMemo(()=>[...new Set(entries.map(e=>e.date.slice(0,7)))].sort(),[entries]);
+
+  // Balance: acumulado hasta un mes (o todo)
+  const [balCutoff,setBalCutoff]=useState("");         // "" = todos | "YYYY-MM" = hasta ese mes inclusive
+
+  // EERR: rango libre por año o por rango de meses
+  const [eerrMode,setEerrMode]=useState("year");       // "year" | "range"
+  const [eerrYear,setEerrYear]=useState(()=>allYears[allYears.length-1]||"");
+  const [eerrFrom,setEerrFrom]=useState("");
+  const [eerrTo,setEerrTo]=useState("");
+
+  // Libro diario: rango libre
+  const [ldFrom,setLdFrom]=useState("");
+  const [ldTo,setLdTo]=useState("");
+
+  // ── Filtered sets ──
+  const balEntries=useMemo(()=>
+    balCutoff ? entries.filter(e=>e.date.slice(0,7)<=balCutoff) : entries
+  ,[entries,balCutoff]);
+
+  const eerrEntries=useMemo(()=>{
+    if(eerrMode==="year" && eerrYear)
+      return entries.filter(e=>e.date.startsWith(eerrYear));
+    const from=eerrFrom||"0000-01", to=eerrTo||"9999-12";
+    return entries.filter(e=>{ const m=e.date.slice(0,7); return m>=from && m<=to; });
+  },[entries,eerrMode,eerrYear,eerrFrom,eerrTo]);
+
+  const ldEntries=useMemo(()=>{
+    const from=ldFrom||"0000-01", to=ldTo||"9999-12";
+    return [...entries.filter(e=>{ const m=e.date.slice(0,7); return m>=from && m<=to; })]
+      .sort((a,b)=>a.date.localeCompare(b.date)||a.number-b.number);
+  },[entries,ldFrom,ldTo]);
+
+  // ── Balance trial ──
   const balances=useMemo(()=>{
     const b={};
-    filtered.forEach(e=>e.rows.forEach(r=>{
+    balEntries.forEach(e=>e.rows.forEach(r=>{
       if(!b[r.account])b[r.account]={debit:0,credit:0};
       b[r.account].debit+=r.debit; b[r.account].credit+=r.credit;
     }));
     return b;
-  },[filtered]);
+  },[balEntries]);
 
   const trial=useMemo(()=>accounts.filter(a=>balances[a.code]).map(a=>{
     const b=balances[a.code]||{debit:0,credit:0};
@@ -559,48 +593,139 @@ function ReportsTab({accounts,entries}){
   }).sort((a,b_)=>a.code.localeCompare(b_.code)),[accounts,balances]);
 
   const totD=trial.reduce((s,r)=>s+r.debit,0), totC=trial.reduce((s,r)=>s+r.credit,0);
-  const income=trial.filter(r=>r.type==="Ingreso"), expenses=trial.filter(r=>r.type==="Gasto");
-  const totInc=income.reduce((s,r)=>s+r.credit-r.debit,0), totExp=expenses.reduce((s,r)=>s+r.debit-r.credit,0);
-  const netResult=totInc-totExp;
-  const sorted=[...filtered].sort((a,b)=>a.date.localeCompare(b.date)||a.number-b.number);
 
+  // ── EERR ──
+  const eerrBalances=useMemo(()=>{
+    const b={};
+    eerrEntries.forEach(e=>e.rows.forEach(r=>{
+      if(!b[r.account])b[r.account]={debit:0,credit:0};
+      b[r.account].debit+=r.debit; b[r.account].credit+=r.credit;
+    }));
+    return b;
+  },[eerrEntries]);
+
+  const eerrTrial=useMemo(()=>accounts.filter(a=>eerrBalances[a.code]).map(a=>{
+    const b=eerrBalances[a.code]||{debit:0,credit:0};
+    return{...a,...b,saldo:b.debit-b.credit};
+  }),[accounts,eerrBalances]);
+
+  const income=eerrTrial.filter(r=>r.type==="Ingreso").sort((a,b)=>a.code.localeCompare(b.code));
+  const expenses=eerrTrial.filter(r=>r.type==="Gasto").sort((a,b)=>a.code.localeCompare(b.code));
+  const totInc=income.reduce((s,r)=>s+(r.credit-r.debit),0);
+  const totExp=expenses.reduce((s,r)=>s+(r.debit-r.credit),0);
+  const netResult=totInc-totExp;
+
+  // ── EERR period label ──
+  const eerrLabel=useMemo(()=>{
+    if(eerrMode==="year") return eerrYear ? `Año ${eerrYear}` : "Todos los períodos";
+    const fmtM=m=>m?new Date(m+"-01T12:00:00").toLocaleDateString("es-CL",{month:"short",year:"numeric"}):"—";
+    if(eerrFrom&&eerrTo) return `${fmtM(eerrFrom)} — ${fmtM(eerrTo)}`;
+    if(eerrFrom) return `Desde ${fmtM(eerrFrom)}`;
+    if(eerrTo) return `Hasta ${fmtM(eerrTo)}`;
+    return "Todos los períodos";
+  },[eerrMode,eerrYear,eerrFrom,eerrTo]);
+
+  // ── Export CSV ──
   function exportCSV(){
     let rows;
     if(type==="ledger"){
-      rows=[["N°","Fecha","Descripción","Código","Cuenta","Tipo","Débito","Crédito"]];
-      sorted.forEach(e=>e.rows.forEach(r=>{const a=accMap[r.account]||{};rows.push([e.number,e.date,e.description,r.account,a.name||"",a.type||"",r.debit,r.credit]);}));
-    } else {
+      rows=[["N°","Fecha","Descripción","Código","Cuenta","Tipo","Tercero","Débito","Crédito"]];
+      ldEntries.forEach(e=>e.rows.forEach(r=>{const a=accMap[r.account]||{};rows.push([e.number,e.date,e.description,r.account,a.name||"",a.type||"",r.counterparty||"",r.debit,r.credit]);}));
+    } else if(type==="balance"){
       rows=[["Código","Cuenta","Tipo","Débito Acum.","Crédito Acum.","Saldo"]];
       trial.forEach(r=>rows.push([r.code,r.name,r.type,r.debit,r.credit,r.saldo]));
+    } else {
+      rows=[["Tipo","Código","Cuenta","Monto"]];
+      income.forEach(r=>rows.push(["Ingreso",r.code,r.name,r.credit-r.debit]));
+      expenses.forEach(r=>rows.push(["Gasto",r.code,r.name,r.debit-r.credit]));
+      rows.push(["Resultado","","",netResult]);
     }
     const csv=rows.map(r=>r.map(v=>`"${v}"`).join(",")).join("\n");
     const url=URL.createObjectURL(new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"}));
-    Object.assign(document.createElement("a"),{href:url,download:`${type}.csv`}).click();
+    Object.assign(document.createElement("a"),{href:url,download:`${type}_${eerrLabel.replace(/[^a-zA-Z0-9]/g,"_")}.csv`}).click();
   }
 
+  const fmtMonthLabel=m=>m?new Date(m+"-01T12:00:00").toLocaleDateString("es-CL",{month:"long",year:"numeric"}):"";
+
   return <div>
+    {/* ── Selector tipo reporte ── */}
     <div style={S.card}><div style={S.cBody}>
       <div style={{display:"flex",gap:14,flexWrap:"wrap",alignItems:"flex-end"}}>
-        <div style={{flex:1}}><label style={S.label}>Tipo de reporte</label>
+        <div style={{flex:"0 0 220px"}}><label style={S.label}>Tipo de reporte</label>
           <select style={S.select} value={type} onChange={e=>setType(e.target.value)}>
             <option value="balance">Balance de Comprobación</option>
             <option value="results">Estado de Resultados</option>
             <option value="ledger">Libro Diario</option>
           </select>
         </div>
-        <div style={{flex:1}}><label style={S.label}>Período</label>
-          <select style={S.select} value={month} onChange={e=>setMonth(e.target.value)}>
-            <option value="">Todos los períodos</option>
-            {months.map(m=><option key={m} value={m}>{new Date(m+"-01T12:00:00").toLocaleDateString("es-CL",{month:"long",year:"numeric"})}</option>)}
+
+        {/* Balance: acumulado hasta fecha */}
+        {type==="balance"&&<div style={{flex:1}}>
+          <label style={S.label}>Acumulado hasta</label>
+          <select style={S.select} value={balCutoff} onChange={e=>setBalCutoff(e.target.value)}>
+            <option value="">Todos los períodos (acumulado total)</option>
+            {[...allMonths].reverse().map(m=><option key={m} value={m}>Hasta {fmtMonthLabel(m)}</option>)}
           </select>
-        </div>
+          <div style={{fontSize:10,color:C.muted,marginTop:3}}>El balance siempre es acumulado desde el inicio hasta el período seleccionado.</div>
+        </div>}
+
+        {/* EERR: año o rango */}
+        {type==="results"&&<>
+          <div style={{flex:"0 0 160px"}}><label style={S.label}>Modo</label>
+            <select style={S.select} value={eerrMode} onChange={e=>setEerrMode(e.target.value)}>
+              <option value="year">Por año</option>
+              <option value="range">Rango de meses</option>
+            </select>
+          </div>
+          {eerrMode==="year"&&<div style={{flex:"0 0 130px"}}><label style={S.label}>Año</label>
+            <select style={S.select} value={eerrYear} onChange={e=>setEerrYear(e.target.value)}>
+              <option value="">Todos</option>
+              {allYears.map(y=><option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>}
+          {eerrMode==="range"&&<>
+            <div style={{flex:"0 0 170px"}}><label style={S.label}>Desde</label>
+              <select style={S.select} value={eerrFrom} onChange={e=>setEerrFrom(e.target.value)}>
+                <option value="">Inicio</option>
+                {allMonths.map(m=><option key={m} value={m}>{fmtMonthLabel(m)}</option>)}
+              </select>
+            </div>
+            <div style={{flex:"0 0 170px"}}><label style={S.label}>Hasta</label>
+              <select style={S.select} value={eerrTo} onChange={e=>setEerrTo(e.target.value)}>
+                <option value="">Fin</option>
+                {[...allMonths].reverse().map(m=><option key={m} value={m}>{fmtMonthLabel(m)}</option>)}
+              </select>
+            </div>
+          </>}
+        </>}
+
+        {/* Libro diario: rango */}
+        {type==="ledger"&&<>
+          <div style={{flex:"0 0 170px"}}><label style={S.label}>Desde</label>
+            <select style={S.select} value={ldFrom} onChange={e=>setLdFrom(e.target.value)}>
+              <option value="">Inicio</option>
+              {allMonths.map(m=><option key={m} value={m}>{fmtMonthLabel(m)}</option>)}
+            </select>
+          </div>
+          <div style={{flex:"0 0 170px"}}><label style={S.label}>Hasta</label>
+            <select style={S.select} value={ldTo} onChange={e=>setLdTo(e.target.value)}>
+              <option value="">Fin</option>
+              {[...allMonths].reverse().map(m=><option key={m} value={m}>{fmtMonthLabel(m)}</option>)}
+            </select>
+          </div>
+        </>}
+
         <Btn v="outline" onClick={exportCSV}>↓ CSV</Btn>
       </div>
     </div></div>
 
+    {/* ── Balance de Comprobación (siempre acumulado) ── */}
     {type==="balance"&&<div style={S.card}>
-      <div style={S.cHead()}><span style={S.cTitle}>Balance de Comprobación</span><span style={{background:Math.abs(totD-totC)<1?"#dcfce7":"#fef2f2",color:Math.abs(totD-totC)<1?C.green:C.danger,padding:"3px 10px",borderRadius:10,fontSize:10,fontWeight:700}}>{Math.abs(totD-totC)<1?"✓ Balanceado":"⚠ Desbalanceado"}</span></div>
-      {trial.length===0?<div style={S.empty}><div style={{fontFamily:"'Georgia',serif",color:C.muted}}>Sin movimientos</div></div>
+      <div style={S.cHead()}>
+        <span style={S.cTitle}>Balance de Comprobación{balCutoff?` — acumulado hasta ${fmtMonthLabel(balCutoff)}`:""}</span>
+        <span style={{background:Math.abs(totD-totC)<1?"#dcfce7":"#fef2f2",color:Math.abs(totD-totC)<1?C.green:C.danger,padding:"3px 10px",borderRadius:10,fontSize:10,fontWeight:700}}>{Math.abs(totD-totC)<1?"✓ Balanceado":"⚠ Desbalanceado"}</span>
+      </div>
+      {trial.length===0?<div style={S.empty}><div style={{fontFamily:"'Georgia',serif",color:C.muted}}>Sin movimientos en el período</div></div>
       :<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12.5}}>
         <thead><tr>{["Código","Cuenta","Tipo","Débito Acum.","Crédito Acum.","Saldo"].map((h,i)=><th key={i} style={{...S.th,textAlign:i>=3?"right":"left"}}>{h}</th>)}</tr></thead>
         <tbody>{trial.map((r,i)=><tr key={r.code} style={{background:i%2===0?"#fafaf9":"#fff"}}>
@@ -615,47 +740,67 @@ function ReportsTab({accounts,entries}){
           <td colSpan={3} style={{...S.td,color:C.gold,fontWeight:700,fontSize:10,letterSpacing:2,textTransform:"uppercase"}}>Total</td>
           <td style={{...S.td,textAlign:"right",color:"#fff",fontWeight:700}}>{fmtCLP(totD)}</td>
           <td style={{...S.td,textAlign:"right",color:"#fff",fontWeight:700}}>{fmtCLP(totC)}</td>
-          <td style={{...S.td,textAlign:"right",color:C.gold,fontWeight:700}}>{fmtCLP(Math.abs(totD-totC))}</td>
+          <td style={{...S.td,textAlign:"right",color:Math.abs(totD-totC)<1?C.gold:"#f87171",fontWeight:700}}>{fmtCLP(Math.abs(totD-totC))}</td>
         </tr></tfoot>
       </table></div>}
     </div>}
 
+    {/* ── Estado de Resultados ── */}
     {type==="results"&&<div style={S.card}>
-      <div style={S.cHead()}><span style={S.cTitle}>Estado de Resultados</span></div>
-      <div style={S.cBody}><div style={{maxWidth:580}}>
-        <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.muted,marginBottom:12,paddingBottom:8,borderBottom:`1px solid ${C.border}`}}>Ingresos</div>
-        {income.map(r=><div key={r.code} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
-          <span style={{fontFamily:"'Georgia',serif"}}>{r.name}</span><span style={{fontWeight:700}}>{fmtCLP(r.credit-r.debit)}</span>
-        </div>)}
-        <div style={{display:"flex",justifyContent:"space-between",padding:"11px 0",borderBottom:`2px solid ${C.navy}`,marginTop:6}}>
-          <span style={{fontWeight:700,fontSize:12,letterSpacing:1,textTransform:"uppercase"}}>Total Ingresos</span>
-          <span style={{fontWeight:700,fontSize:15,color:C.green}}>{fmtCLP(totInc)}</span>
-        </div>
-        <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.muted,margin:"20px 0 12px",paddingBottom:8,borderBottom:`1px solid ${C.border}`}}>Gastos</div>
-        {expenses.map(r=><div key={r.code} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
-          <span style={{fontFamily:"'Georgia',serif"}}>{r.name}</span><span style={{fontWeight:700}}>{fmtCLP(r.debit-r.credit)}</span>
-        </div>)}
-        <div style={{display:"flex",justifyContent:"space-between",padding:"11px 0",borderBottom:`2px solid ${C.navy}`,marginTop:6}}>
-          <span style={{fontWeight:700,fontSize:12,letterSpacing:1,textTransform:"uppercase"}}>Total Gastos</span>
-          <span style={{fontWeight:700,fontSize:15,color:C.danger}}>{fmtCLP(totExp)}</span>
-        </div>
-        <div style={{display:"flex",justifyContent:"space-between",padding:"18px 20px",background:netResult>=0?C.greenBg:C.redBg,marginTop:18,borderRadius:3}}>
-          <span style={{fontWeight:700,fontSize:15,fontFamily:"'Georgia',serif"}}>Resultado del Ejercicio</span>
-          <span style={{fontWeight:700,fontSize:22,color:netResult>=0?C.green:C.danger}}>{netResult>=0?"+":""}{fmtCLP(netResult)}</span>
-        </div>
+      <div style={S.cHead()}>
+        <span style={S.cTitle}>Estado de Resultados — {eerrLabel}</span>
+        <span style={{fontSize:11,color:C.gold}}>{eerrEntries.length} asientos</span>
+      </div>
+      <div style={S.cBody}><div style={{maxWidth:620}}>
+        {income.length===0&&expenses.length===0&&<div style={{...S.empty,padding:20}}><div style={{color:C.muted}}>Sin movimientos de resultado en el período seleccionado.</div></div>}
+        {income.length>0&&<>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.muted,marginBottom:12,paddingBottom:8,borderBottom:`1px solid ${C.border}`}}>Ingresos</div>
+          {income.map(r=><div key={r.code} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
+            <span style={{fontFamily:"'Georgia',serif",display:"flex",gap:8,alignItems:"center"}}>
+              <code style={{fontSize:10,color:C.muted}}>{r.code}</code>{r.name}
+            </span>
+            <span style={{fontWeight:700,color:C.green}}>{fmtCLP(r.credit-r.debit)}</span>
+          </div>)}
+          <div style={{display:"flex",justifyContent:"space-between",padding:"11px 0",borderBottom:`2px solid ${C.navy}`,marginTop:4,marginBottom:20}}>
+            <span style={{fontWeight:700,fontSize:12,letterSpacing:1,textTransform:"uppercase"}}>Total Ingresos</span>
+            <span style={{fontWeight:700,fontSize:16,color:C.green}}>{fmtCLP(totInc)}</span>
+          </div>
+        </>}
+        {expenses.length>0&&<>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.muted,marginBottom:12,paddingBottom:8,borderBottom:`1px solid ${C.border}`}}>Gastos</div>
+          {expenses.map(r=><div key={r.code} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
+            <span style={{fontFamily:"'Georgia',serif",display:"flex",gap:8,alignItems:"center"}}>
+              <code style={{fontSize:10,color:C.muted}}>{r.code}</code>{r.name}
+            </span>
+            <span style={{fontWeight:700,color:C.danger}}>{fmtCLP(r.debit-r.credit)}</span>
+          </div>)}
+          <div style={{display:"flex",justifyContent:"space-between",padding:"11px 0",borderBottom:`2px solid ${C.navy}`,marginTop:4,marginBottom:20}}>
+            <span style={{fontWeight:700,fontSize:12,letterSpacing:1,textTransform:"uppercase"}}>Total Gastos</span>
+            <span style={{fontWeight:700,fontSize:16,color:C.danger}}>{fmtCLP(totExp)}</span>
+          </div>
+        </>}
+        {(income.length>0||expenses.length>0)&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"18px 24px",background:netResult>=0?C.greenBg:C.redBg,border:`1px solid ${netResult>=0?C.green:C.danger}`,borderRadius:4}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:13,fontFamily:"'Georgia',serif"}}>Resultado del Ejercicio</div>
+            <div style={{fontSize:10,color:C.muted,marginTop:2}}>{eerrLabel}</div>
+          </div>
+          <span style={{fontWeight:700,fontSize:26,color:netResult>=0?C.green:C.danger}}>{netResult>=0?"+":""}{fmtCLP(netResult)}</span>
+        </div>}
       </div></div>
     </div>}
 
+    {/* ── Libro Diario ── */}
     {type==="ledger"&&<div style={S.card}>
-      <div style={S.cHead()}><span style={S.cTitle}>Libro Diario ({sorted.length} asientos)</span></div>
-      {sorted.length===0?<div style={S.empty}><div style={{fontFamily:"'Georgia',serif",color:C.muted}}>Sin asientos</div></div>
+      <div style={S.cHead()}><span style={S.cTitle}>Libro Diario ({ldEntries.length} asientos)</span></div>
+      {ldEntries.length===0?<div style={S.empty}><div style={{fontFamily:"'Georgia',serif",color:C.muted}}>Sin asientos en el período</div></div>
       :<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-        <thead><tr>{["N°","Fecha","Glosa","Cuenta","Débito","Crédito"].map((h,i)=><th key={i} style={{...S.th,textAlign:i>=4?"right":"left"}}>{h}</th>)}</tr></thead>
-        <tbody>{sorted.map(e=>e.rows.map((r,ri)=>{const a=accMap[r.account]||{}; return <tr key={r.id} style={{background:ri%2===0?"#fafaf9":"#fff"}}>
-          {ri===0&&<td style={{...S.td,fontWeight:700,color:C.gold,fontFamily:"'Georgia',serif"}} rowSpan={e.rows.length}>#{e.number}</td>}
+        <thead><tr>{["N°","Fecha","Glosa","Cuenta","Tercero","Débito","Crédito"].map((h,i)=><th key={i} style={{...S.th,textAlign:i>=5?"right":"left"}}>{h}</th>)}</tr></thead>
+        <tbody>{ldEntries.map(e=>e.rows.map((r,ri)=>{const a=accMap[r.account]||{}; return <tr key={r.id||ri} style={{background:ri%2===0?"#fafaf9":"#fff"}}>
+          {ri===0&&<td style={{...S.td,fontWeight:700,color:C.gold,fontFamily:"'Georgia',serif",whiteSpace:"nowrap"}} rowSpan={e.rows.length}>#{e.number}</td>}
           {ri===0&&<td style={{...S.td,color:C.muted,fontSize:11,whiteSpace:"nowrap"}} rowSpan={e.rows.length}>{fmtDate(e.date)}</td>}
-          {ri===0&&<td style={{...S.td,fontFamily:"'Georgia',serif"}} rowSpan={e.rows.length}>{e.description}</td>}
+          {ri===0&&<td style={{...S.td,fontFamily:"'Georgia',serif",maxWidth:200}} rowSpan={e.rows.length}>{e.description}</td>}
           <td style={{...S.td,paddingLeft:r.debit===0?24:12}}>{a.name||r.account}</td>
+          <td style={{...S.td,fontSize:11,color:C.muted}}>{r.counterparty||"—"}</td>
           <td style={{...S.td,textAlign:"right",fontWeight:r.debit>0?700:400,color:r.debit>0?C.navy:C.border}}>{r.debit>0?fmtCLP(r.debit):"—"}</td>
           <td style={{...S.td,textAlign:"right",fontWeight:r.credit>0?700:400,color:r.credit>0?C.navy:C.border}}>{r.credit>0?fmtCLP(r.credit):"—"}</td>
         </tr>;}))}
