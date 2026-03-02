@@ -17,66 +17,104 @@ function today() { return new Date().toISOString().slice(0,10); }
 function lsLoad(k,fb){ try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb;}catch{return fb;} }
 function lsSave(k,v){ try{localStorage.setItem(k,JSON.stringify(v));}catch{} }
 
-// ── Supabase CRUD (jsonb strategy) ──
-async function dbLoad(table, uid, cacheKey, fallback){
-  if(!uid) return lsLoad(cacheKey, fallback);
-  const {data,error}=await sb.from(table).select("id,data").eq("user_id",uid);
-  if(error){console.error(table,error);return lsLoad(cacheKey,fallback);}
-  const rows=(data||[]).map(r=>({...r.data,id:r.id}));
-  lsSave(cacheKey,rows); return rows;
+// ── Entities (multi-empresa) ──
+async function dbLoadEntities(uid){
+  if(!uid) return lsLoad("ac_entities",[]);
+  const {data,error}=await sb.from("ac_entities").select("*").eq("user_id",uid).order("name");
+  if(error){console.error(error);return lsLoad("ac_entities",[]);}
+  const rows=(data||[]).map(r=>({id:r.id,rut:r.rut,name:r.name,giro:r.giro||"",createdAt:r.created_at}));
+  lsSave("ac_entities",rows); return rows;
 }
-async function dbUpsert(table, uid, record, cacheKey, all){
-  lsSave(cacheKey,all);
+async function dbUpsertEntity(uid,e,all){
+  lsSave("ac_entities",all);
   if(!uid) return;
-  const {error}=await sb.from(table).upsert({id:record.id,user_id:uid,data:record},{onConflict:"id"});
+  const {error}=await sb.from("ac_entities").upsert({id:e.id,user_id:uid,rut:e.rut,name:e.name,giro:e.giro||null},{onConflict:"id"});
+  if(error) console.error("upsert entity",error);
+}
+async function dbDeleteEntity(uid,id,all){
+  lsSave("ac_entities",all);
+  if(!uid) return;
+  const {error}=await sb.from("ac_entities").delete().eq("id",id).eq("user_id",uid);
+  if(error) console.error("delete entity",error);
+}
+
+// ── Supabase CRUD (jsonb strategy — entity-aware) ──
+async function dbLoad(table, uid, eid, cacheKey, fallback){
+  const key=cacheKey+(eid?":"+eid:"");
+  if(!uid) return lsLoad(key, fallback);
+  let q=sb.from(table).select("id,data").eq("user_id",uid);
+  if(eid) q=q.eq("entity_id",eid);
+  const {data,error}=await q;
+  if(error){console.error(table,error);return lsLoad(key,fallback);}
+  const rows=(data||[]).map(r=>({...r.data,id:r.id}));
+  lsSave(key,rows); return rows;
+}
+async function dbUpsert(table, uid, eid, record, cacheKey, all){
+  const key=cacheKey+(eid?":"+eid:"");
+  lsSave(key,all);
+  if(!uid) return;
+  const payload={id:record.id,user_id:uid,data:record};
+  if(eid) payload.entity_id=eid;
+  const {error}=await sb.from(table).upsert(payload,{onConflict:"id"});
   if(error) console.error("upsert",table,error);
 }
-async function dbDelete(table, uid, id, cacheKey, all){
-  lsSave(cacheKey,all);
+async function dbDelete(table, uid, id, cacheKey, eid, all){
+  const key=cacheKey+(eid?":"+eid:"");
+  lsSave(key,all);
   if(!uid) return;
   const {error}=await sb.from(table).delete().eq("id",id).eq("user_id",uid);
   if(error) console.error("delete",table,error);
 }
 
-// ── Entries (explicit columns) ──
-async function dbLoadEntries(uid){
-  if(!uid) return lsLoad("ac_entries",[]);
-  const {data,error}=await sb.from("ac_entries").select("*").eq("user_id",uid).order("number");
-  if(error){console.error(error);return lsLoad("ac_entries",[]);}
+// ── Entries (explicit columns — entity-aware) ──
+async function dbLoadEntries(uid, eid){
+  const key="ac_entries"+(eid?":"+eid:"");
+  if(!uid) return lsLoad(key,[]);
+  let q=sb.from("ac_entries").select("*").eq("user_id",uid);
+  if(eid) q=q.eq("entity_id",eid);
+  const {data,error}=await q.order("number");
+  if(error){console.error(error);return lsLoad(key,[]);}
   const rows=(data||[]).map(r=>({id:r.id,number:r.number,date:r.date,description:r.description,reference:r.reference,rows:r.rows,totalDebit:+r.total_debit,totalCredit:+r.total_credit,createdAt:r.created_at}));
-  lsSave("ac_entries",rows); return rows;
+  lsSave(key,rows); return rows;
 }
-async function dbUpsertEntry(uid, e, all){
-  lsSave("ac_entries",all);
+async function dbUpsertEntry(uid, eid, e, all){
+  const key="ac_entries"+(eid?":"+eid:"");
+  lsSave(key,all);
   if(!uid) return;
-  const {error}=await sb.from("ac_entries").upsert({id:e.id,user_id:uid,number:e.number,date:e.date,description:e.description,reference:e.reference||null,rows:e.rows,total_debit:e.totalDebit,total_credit:e.totalCredit},{onConflict:"id"});
+  const payload={id:e.id,user_id:uid,number:e.number,date:e.date,description:e.description,reference:e.reference||null,rows:e.rows,total_debit:e.totalDebit,total_credit:e.totalCredit};
+  if(eid) payload.entity_id=eid;
+  const {error}=await sb.from("ac_entries").upsert(payload,{onConflict:"id"});
   if(error) console.error("upsert entry",error);
 }
-async function dbDeleteEntry(uid, id, all){
-  lsSave("ac_entries",all);
+async function dbDeleteEntry(uid, id, eid, all){
+  const key="ac_entries"+(eid?":"+eid:"");
+  lsSave(key,all);
   if(!uid) return;
   const {error}=await sb.from("ac_entries").delete().eq("id",id).eq("user_id",uid);
   if(error) console.error("delete entry",error);
 }
 
-// ── Accounts (explicit columns) ──
-async function dbLoadAccounts(uid){
-  if(!uid) return lsLoad("ac_accounts", DEFAULT_ACCOUNTS);
-  const {data,error}=await sb.from("ac_accounts").select("*").eq("user_id",uid).order("code");
-  if(error){console.error(error);return lsLoad("ac_accounts",DEFAULT_ACCOUNTS);}
+// ── Accounts (explicit columns — entity-aware) ──
+async function dbLoadAccounts(uid, eid){
+  const key="ac_accounts"+(eid?":"+eid:"");
+  if(!uid) return lsLoad(key, DEFAULT_ACCOUNTS);
+  let q=sb.from("ac_accounts").select("*").eq("user_id",uid);
+  if(eid) q=q.eq("entity_id",eid);
+  const {data,error}=await q.order("code");
+  if(error){console.error(error);return lsLoad(key,DEFAULT_ACCOUNTS);}
   if(!data||data.length===0){
-    // First login — seed defaults
-    const rows=DEFAULT_ACCOUNTS.map(a=>({id:genId(),user_id:uid,code:a.code,name:a.name,type:a.type}));
+    const rows=DEFAULT_ACCOUNTS.map(a=>({id:genId(),user_id:uid,entity_id:eid||null,code:a.code,name:a.name,type:a.type}));
     await sb.from("ac_accounts").insert(rows);
     return DEFAULT_ACCOUNTS;
   }
   const rows=data.map(r=>({code:r.code,name:r.name,type:r.type}));
-  lsSave("ac_accounts",rows); return rows;
+  lsSave(key,rows); return rows;
 }
-async function dbUpsertAccount(uid, a, all){
-  lsSave("ac_accounts",all);
+async function dbUpsertAccount(uid, eid, a, all){
+  const key="ac_accounts"+(eid?":"+eid:"");
+  lsSave(key,all);
   if(!uid) return;
-  const {error}=await sb.from("ac_accounts").upsert({id:genId(),user_id:uid,code:a.code,name:a.name,type:a.type},{onConflict:"user_id,code"});
+  const {error}=await sb.from("ac_accounts").upsert({id:genId(),user_id:uid,entity_id:eid||null,code:a.code,name:a.name,type:a.type},{onConflict:"user_id,code"});
   if(error) console.error("upsert account",error);
 }
 async function dbDeleteAccount(uid, code, all){
@@ -336,8 +374,8 @@ function AmountInput({value,onChange}){
 }
 
 // ── New Entry ──
-function NewEntryTab({accounts,entries,setEntries,userId}){
-  const emptyRow=()=>({id:genId(),account:"",debit:0,credit:0});
+function NewEntryTab({accounts,entries,setEntries,userId,entityId}){
+  const emptyRow=()=>({id:genId(),account:"",debit:0,credit:0,counterparty:""});
   const [date,setDate]=useState(today());
   const [desc,setDesc]=useState(""); const [ref,setRef]=useState("");
   const [rows,setRows]=useState([emptyRow(),emptyRow()]);
@@ -361,7 +399,7 @@ function NewEntryTab({accounts,entries,setEntries,userId}){
     const newEntry={id:genId(),number:n,date,description:desc.trim(),reference:ref.trim(),rows:[...rows],totalDebit:totD,totalCredit:totC,createdAt:new Date().toISOString()};
     const updated=[...entries, newEntry];
     setEntries(updated);
-    await dbUpsertEntry(userId, newEntry, updated);
+    await dbUpsertEntry(userId, entityId, newEntry, updated);
     setDesc(""); setRef(""); setDate(today()); setRows([emptyRow(),emptyRow()]);
     setOk(`✓ Asiento N° ${n} registrado.`); setTimeout(()=>setOk(""),4000);
   }
@@ -384,7 +422,8 @@ function NewEntryTab({accounts,entries,setEntries,userId}){
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
           <thead><tr>
             <th style={{...S.th,width:36}}>#</th>
-            <th style={{...S.th,width:"45%"}}>Cuenta</th>
+            <th style={{...S.th,width:"35%"}}>Cuenta</th>
+            <th style={{...S.th,width:"18%"}}>Tercero (opcional)</th>
             <th style={{...S.th,textAlign:"right"}}>Débito ($)</th>
             <th style={{...S.th,textAlign:"right"}}>Crédito ($)</th>
             <th style={{...S.th,width:40}}></th>
@@ -392,12 +431,13 @@ function NewEntryTab({accounts,entries,setEntries,userId}){
           <tbody>{rows.map((row,i)=><tr key={row.id} style={{background:i%2===0?"#fafaf9":"#fff"}}>
             <td style={{...S.td,color:C.muted,fontSize:11}}>{i+1}</td>
             <td style={S.td}><AccountSelect value={row.account} onChange={v=>upd(row.id,"account",v)} accounts={accounts}/></td>
+            <td style={S.td}><input style={{...S.input,fontSize:12}} placeholder="FPO, WYA…" value={row.counterparty||""} onChange={e=>upd(row.id,"counterparty",e.target.value)}/></td>
             <td style={S.td}><AmountInput value={row.debit} onChange={v=>upd(row.id,"debit",v)}/></td>
             <td style={S.td}><AmountInput value={row.credit} onChange={v=>upd(row.id,"credit",v)}/></td>
             <td style={S.td}>{rows.length>2&&<button style={S.bsm("transparent",C.danger)} onClick={()=>setRows(rs=>rs.filter(r=>r.id!==row.id))}>✕</button>}</td>
           </tr>)}</tbody>
           <tfoot><tr style={{background:C.navy}}>
-            <td colSpan={2} style={{...S.td,color:C.gold,fontWeight:700,fontSize:10.5,letterSpacing:2,textTransform:"uppercase"}}>TOTALES</td>
+            <td colSpan={3} style={{...S.td,color:C.gold,fontWeight:700,fontSize:10.5,letterSpacing:2,textTransform:"uppercase"}}>TOTALES</td>
             <td style={{...S.td,textAlign:"right",fontWeight:700,fontSize:15,color:balanced?C.green:"#f87171"}}>{fmtCLP(totD)}</td>
             <td style={{...S.td,textAlign:"right",fontWeight:700,fontSize:15,color:balanced?C.green:"#f87171"}}>{fmtCLP(totC)}</td>
             <td style={S.td}></td>
@@ -415,7 +455,7 @@ function NewEntryTab({accounts,entries,setEntries,userId}){
 }
 
 // ── Entries List ──
-function EntriesTab({accounts,entries,setEntries,userId}){
+function EntriesTab({accounts,entries,setEntries,userId,entityId}){
   const [search,setSearch]=useState(""); const [month,setMonth]=useState(""); const [expanded,setExpanded]=useState(null); const [page,setPage]=useState(1);
   const PER=10;
   const accMap=useMemo(()=>Object.fromEntries(accounts.map(a=>[a.code,a])),[accounts]);
@@ -428,7 +468,7 @@ function EntriesTab({accounts,entries,setEntries,userId}){
   const pages=Math.ceil(filtered.length/PER);
   const paged=filtered.slice((page-1)*PER,page*PER);
 
-  function del(id){ if(!confirm("¿Eliminar asiento?")) return; const u=entries.filter(e=>e.id!==id); setEntries(u); dbDeleteEntry(userId, id, u); }
+  function del(id){ if(!confirm("¿Eliminar asiento?")) return; const u=entries.filter(e=>e.id!==id); setEntries(u); dbDeleteEntry(userId, id, entityId, u); }
   function exportCSV(){
     const rows=[["N°","Fecha","Descripción","Referencia","Código","Cuenta","Débito","Crédito"]];
     filtered.forEach(e=>e.rows.forEach(r=>{const a=accMap[r.account]||{};rows.push([e.number,e.date,e.description,e.reference||"",r.account,a.name||"",r.debit,r.credit]);}));
@@ -469,17 +509,18 @@ function EntriesTab({accounts,entries,setEntries,userId}){
         {open&&<div style={{overflowX:"auto"}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:12.5}}>
             <thead><tr>
-              {["Código","Cuenta","Tipo","Débito","Crédito"].map((h,i)=><th key={i} style={{...S.th,textAlign:i>=3?"right":"left"}}>{h}</th>)}
+              {["Código","Cuenta","Tipo","Tercero","Débito","Crédito"].map((h,i)=><th key={i} style={{...S.th,textAlign:i>=4?"right":"left"}}>{h}</th>)}
             </tr></thead>
             <tbody>{e.rows.map((r,i)=>{const a=accMap[r.account]||{};return <tr key={i} style={{background:i%2===0?"#fafaf9":"#fff"}}>
               <td style={{...S.td,fontFamily:"monospace",fontSize:11,color:C.muted}}>{r.account}</td>
               <td style={{...S.td,fontFamily:"'Georgia',serif"}}>{a.name||r.account}</td>
               <td style={S.td}>{a.type&&<span style={S.tag(a.type)}>{a.type}</span>}</td>
+              <td style={{...S.td,fontSize:11,color:C.muted}}>{r.counterparty||"—"}</td>
               <td style={{...S.td,textAlign:"right",fontWeight:r.debit>0?700:400,color:r.debit>0?C.navy:C.border}}>{r.debit>0?fmtCLP(r.debit):"—"}</td>
               <td style={{...S.td,textAlign:"right",fontWeight:r.credit>0?700:400,color:r.credit>0?C.navy:C.border}}>{r.credit>0?fmtCLP(r.credit):"—"}</td>
             </tr>;})}</tbody>
             <tfoot><tr style={{background:"#f1f5f9"}}>
-              <td colSpan={3} style={{...S.td,fontWeight:700,fontSize:10,letterSpacing:1,textTransform:"uppercase"}}>Total</td>
+              <td colSpan={4} style={{...S.td,fontWeight:700,fontSize:10,letterSpacing:1,textTransform:"uppercase"}}>Total</td>
               <td style={{...S.td,textAlign:"right",fontWeight:700}}>{fmtCLP(e.totalDebit)}</td>
               <td style={{...S.td,textAlign:"right",fontWeight:700}}>{fmtCLP(e.totalCredit)}</td>
             </tr></tfoot>
@@ -625,7 +666,7 @@ function ReportsTab({accounts,entries}){
 }
 
 // ── Accounts (Plan de Cuentas) ──
-function AccountsTab({accounts,setAccounts,userId}){
+function AccountsTab({accounts,setAccounts,userId,entityId}){
   const [f,setF]=useState({code:"",name:"",type:"Activo"});
   const [search,setSearch]=useState(""); const [ft,setFt]=useState(""); const [err,setErr]=useState("");
   const filtered=useMemo(()=>accounts.filter(a=>(!search||a.code.includes(search)||a.name.toLowerCase().includes(search.toLowerCase()))&&(!ft||a.type===ft)).sort((a,b)=>a.code.localeCompare(b.code)),[accounts,search,ft]);
@@ -825,16 +866,16 @@ function AmortTable({liability,onToggle}){
 }
 
 
-function LiabilitiesSection({rates,userId,accounts,entries,setEntries}){
+function LiabilitiesSection({rates,userId,entityId,accounts,entries,setEntries}){
   const [liabilities,setLiabilities]=useState(()=>lsLoad("ac_liabilities",[]));
   const [view,setView]=useState("list"); const [sel,setSel]=useState(null); const [msg,setMsg]=useState(null);
 
-  useEffect(()=>{ dbLoad("ac_liabilities",userId,"ac_liabilities",[]).then(setLiabilities); },[userId]);
+  useEffect(()=>{ dbLoad("ac_liabilities", userId, entityId, "ac_liabilities",[]).then(setLiabilities); },[userId]);
 
   function persist(d,record,deleted){
     setLiabilities(d);
-    if(record) dbUpsert("ac_liabilities",userId,record,"ac_liabilities",d);
-    if(deleted) dbDelete("ac_liabilities",userId,deleted,"ac_liabilities",d);
+    if(record) dbUpsert("ac_liabilities", userId, entityId, record,"ac_liabilities",d);
+    if(deleted) dbDelete("ac_liabilities", userId, deleted, "ac_liabilities", entityId, d);
   }
   function handleSave(l){
     const u=liabilities.find(x=>x.id===l.id)?liabilities.map(x=>x.id===l.id?l:x):[...liabilities,l];
@@ -854,7 +895,7 @@ function LiabilitiesSection({rates,userId,accounts,entries,setEntries}){
       if(l.id!==lid) return l;
       const t=l.amortTable.map((r,i)=>i===idx?{...r,paid:!r.paid}:r);
       const updated={...l,amortTable:t};
-      dbUpsert("ac_liabilities",userId,updated,"ac_liabilities",u);
+      dbUpsert("ac_liabilities", userId, entityId, updated,"ac_liabilities",u);
       return updated;
     });
     setLiabilities(u); lsSave("ac_liabilities",u);
@@ -909,7 +950,7 @@ function LiabilitiesSection({rates,userId,accounts,entries,setEntries}){
           };
           const updated1=[...currentEntries,e1];
           setEntries(updated1);
-          await dbUpsertEntry(userId,e1,updated1);
+          await dbUpsertEntry(userId, entityId, e1, updated1);
         }
       }
 
@@ -932,7 +973,7 @@ function LiabilitiesSection({rates,userId,accounts,entries,setEntries}){
         };
         const updated2=[...currentEntries2,e2];
         setEntries(updated2);
-        await dbUpsertEntry(userId,e2,updated2);
+        await dbUpsertEntry(userId, entityId, e2, updated2);
         setMsg({ok:true,text:`Cuota ${row.period} pagada. ${isUF?"Asientos de reajuste y pago generados.":"Asiento de pago generado."}`});
         setTimeout(()=>setMsg(null),5000);
       }
@@ -984,7 +1025,7 @@ function LiabilitiesSection({rates,userId,accounts,entries,setEntries}){
 const INV_TYPES=["Acción","Bono","Fondo","ETF","Otro"];
 const INV_MOVES=[{v:"compra",l:"Compra"},{v:"venta",l:"Venta"},{v:"dividendo",l:"Dividendo"},{v:"cupon",l:"Cupón/Interés"},{v:"ajuste",l:"Ajuste"}];
 
-function InvestmentsSection({rates,userId,accounts,entries,setEntries}){
+function InvestmentsSection({rates,userId,entityId,accounts,entries,setEntries}){
   const [insts,setInsts]=useState(()=>lsLoad("ac_inv_instruments",[]));
   const [movs, setMovs] =useState(()=>lsLoad("ac_inv_movements",[]));
   const [mkt,  setMkt]  =useState(()=>lsLoad("ac_inv_market",{}));
@@ -992,9 +1033,9 @@ function InvestmentsSection({rates,userId,accounts,entries,setEntries}){
 
   useEffect(()=>{
     if(!userId) return;
-    dbLoad("ac_inv_instruments",userId,"ac_inv_instruments",[]).then(setInsts);
-    dbLoad("ac_inv_movements",userId,"ac_inv_movements",[]).then(setMovs);
-    dbLoad("ac_inv_market",userId,"ac_inv_market_rows",[]).then(rows=>{
+    dbLoad("ac_inv_instruments", userId, entityId, "ac_inv_instruments",[]).then(setInsts);
+    dbLoad("ac_inv_movements", userId, entityId, "ac_inv_movements",[]).then(setMovs);
+    dbLoad("ac_inv_market", userId, entityId, "ac_inv_market_rows",[]).then(rows=>{
       const map={};
       rows.forEach(r=>{ if(!map[r.instrumentId]) map[r.instrumentId]=[]; map[r.instrumentId].push(r); });
       Object.keys(map).forEach(k=>map[k].sort((a,b)=>b.date.localeCompare(a.date)));
@@ -1011,7 +1052,7 @@ function InvestmentsSection({rates,userId,accounts,entries,setEntries}){
     const newEntry={id:genId(),number:n,date,description,reference:"Auto-Inversiones",rows:entryRows,totalDebit:totalD,totalCredit:totalC,createdAt:new Date().toISOString()};
     const updated=[...currentEntries,newEntry];
     setEntries(updated);
-    await dbUpsertEntry(userId,newEntry,updated);
+    await dbUpsertEntry(userId, entityId, newEntry, updated);
   }
 
   const eI={name:"",ticker:"",type:"Acción",currency:"USD",isin:"",custodian:"",notes:"",accountCode:""};
@@ -1042,7 +1083,7 @@ function InvestmentsSection({rates,userId,accounts,entries,setEntries}){
     setErr(""); if(!iF.name.trim()) return setErr("Nombre obligatorio.");
     const inst={id:sel?.id||genId(),...iF,createdAt:sel?.createdAt||new Date().toISOString()};
     const u=insts.find(x=>x.id===inst.id)?insts.map(x=>x.id===inst.id?inst:x):[...insts,inst];
-    setInsts(u); dbUpsert("ac_inv_instruments",userId,inst,"ac_inv_instruments",u);
+    setInsts(u); dbUpsert("ac_inv_instruments", userId, entityId, inst,"ac_inv_instruments",u);
     setMsg({ok:true,text:`"${inst.name}" guardado.`}); setView("list");setSel(null);setIF(eI);setTimeout(()=>setMsg(null),3000);
   }
   async function saveMov(){
@@ -1063,7 +1104,7 @@ function InvestmentsSection({rates,userId,accounts,entries,setEntries}){
     const m={id:genId(),...mF,qty,unitPrice:price,fxRate:parseFloat(mF.fxRate)||null,
       comisionPct:parseFloat(mF.comisionPct)||0,totalIntermCLP,extras:mF.extras||[],
       createdAt:new Date().toISOString()};
-    const u=[...movs,m]; setMovs(u); dbUpsert("ac_inv_movements",userId,m,"ac_inv_movements",u);
+    const u=[...movs,m]; setMovs(u); dbUpsert("ac_inv_movements", userId, entityId, m,"ac_inv_movements",u);
 
     // ── Asiento contable automático ──
     const montoCLP=Math.round(qty*price*(inst?.currency==="CLP"?1:fx));
@@ -1119,7 +1160,7 @@ function InvestmentsSection({rates,userId,accounts,entries,setEntries}){
     const price=parseFloat(mkF.price); if(isNaN(price)||price<0) return setErr("Precio inválido.");
     const entry={id:genId(),instrumentId:mkF.instrumentId,date:mkF.date,price,source:mkF.source,createdAt:new Date().toISOString()};
     const newMkt={...mkt,[mkF.instrumentId]:[...(mkt[mkF.instrumentId]||[]),entry].sort((a,b)=>b.date.localeCompare(a.date))};
-    setMkt(newMkt); lsSave("ac_inv_market",newMkt); dbUpsert("ac_inv_market",userId,entry,"ac_inv_market_rows",[...Object.values(newMkt).flat()]);
+    setMkt(newMkt); lsSave("ac_inv_market",newMkt); dbUpsert("ac_inv_market", userId, entityId, entry,"ac_inv_market_rows",[...Object.values(newMkt).flat()]);
 
     // ── Ajuste por precio de mercado ──
     const inst=insts.find(x=>x.id===mkF.instrumentId);
@@ -1152,7 +1193,7 @@ function InvestmentsSection({rates,userId,accounts,entries,setEntries}){
   }
   function delInst(id){
     if(!confirm("¿Eliminar instrumento?")) return;
-    const u=insts.filter(x=>x.id!==id); setInsts(u); dbDelete("ac_inv_instruments",userId,id,"ac_inv_instruments",u);
+    const u=insts.filter(x=>x.id!==id); setInsts(u); dbDelete("ac_inv_instruments", userId, id, "ac_inv_instruments", entityId, u);
     const um=movs.filter(m=>m.instrumentId!==id); setMovs(um); lsSave("ac_inv_movements",um);
     const mk2={...mkt};delete mk2[id];setMkt(mk2);lsSave("ac_inv_market",mk2);
     if(sel?.id===id){setSel(null);setView("list");}
@@ -1316,7 +1357,7 @@ function InvestmentsSection({rates,userId,accounts,entries,setEntries}){
 // ════════════════════════════════════════════════════════════════
 //  INVENTORY SECTION
 // ════════════════════════════════════════════════════════════════
-function InventorySection({rates,userId,accounts,entries,setEntries}){
+function InventorySection({rates,userId,entityId,accounts,entries,setEntries}){
   const [products,setProducts]=useState(()=>lsLoad("ac_inv_prods",[]));
   const [movs,setMovs]=useState(()=>lsLoad("ac_inv_movs",[]));
   const [mkt,setMkt]=useState(()=>lsLoad("ac_inv_mktprice",{}));
@@ -1324,9 +1365,9 @@ function InventorySection({rates,userId,accounts,entries,setEntries}){
 
   useEffect(()=>{
     if(!userId) return;
-    dbLoad("ac_inv_products",userId,"ac_inv_prods",[]).then(setProducts);
-    dbLoad("ac_inv_product_movs",userId,"ac_inv_movs",[]).then(setMovs);
-    dbLoad("ac_inv_product_market",userId,"ac_inv_mktprice_rows",[]).then(rows=>{
+    dbLoad("ac_inv_products", userId, entityId, "ac_inv_prods",[]).then(setProducts);
+    dbLoad("ac_inv_product_movs", userId, entityId, "ac_inv_movs",[]).then(setMovs);
+    dbLoad("ac_inv_product_market", userId, entityId, "ac_inv_mktprice_rows",[]).then(rows=>{
       const map={};
       rows.forEach(r=>{ if(!map[r.productId]) map[r.productId]=[]; map[r.productId].push(r); });
       Object.keys(map).forEach(k=>map[k].sort((a,b)=>b.date.localeCompare(a.date)));
@@ -1341,7 +1382,7 @@ function InventorySection({rates,userId,accounts,entries,setEntries}){
     const cur=lsLoad("ac_entries",[]);
     const n=cur.length+1;
     const e={id:genId(),number:n,date,description,reference:"Auto-Inventario",rows:entryRows,totalDebit:totalD,totalCredit:totalC,createdAt:new Date().toISOString()};
-    const updated=[...cur,e]; setEntries(updated); await dbUpsertEntry(userId,e,updated);
+    const updated=[...cur,e]; setEntries(updated); await dbUpsertEntry(userId, entityId, e, updated);
   }
 
   const eP={code:"",name:"",unit:"unidad",currency:"CLP",notes:"",accountCode:""};
@@ -1368,7 +1409,7 @@ function InventorySection({rates,userId,accounts,entries,setEntries}){
     setErr(""); if(!pF.code.trim()||!pF.name.trim()) return setErr("Código y nombre obligatorios.");
     if(products.some(p=>p.code===pF.code.trim())) return setErr("Código ya existe.");
     const prod={id:genId(),...pF,code:pF.code.trim(),name:pF.name.trim(),createdAt:new Date().toISOString()};
-    const u=[...products,prod]; setProducts(u); dbUpsert("ac_inv_products",userId,prod,"ac_inv_prods",u);
+    const u=[...products,prod]; setProducts(u); dbUpsert("ac_inv_products", userId, entityId, prod,"ac_inv_prods",u);
     setMsg({ok:true,text:`"${pF.name}" creado.`}); setView("list");setPF(eP);setTimeout(()=>setMsg(null),3000);
   }
 
@@ -1390,7 +1431,7 @@ function InventorySection({rates,userId,accounts,entries,setEntries}){
     const m={id:genId(),...mF,qty,unitCost:parseFloat(mF.unitCost)||0,unitPrice:parseFloat(mF.unitPrice)||0,
       comisionPct:parseFloat(mF.comisionPct)||0,totalInterm,extras:mF.extras||[],
       createdAt:new Date().toISOString()};
-    const u=[...movs,m]; setMovs(u); dbUpsert("ac_inv_product_movs",userId,m,"ac_inv_movs",u);
+    const u=[...movs,m]; setMovs(u); dbUpsert("ac_inv_product_movs", userId, entityId, m,"ac_inv_movs",u);
 
     // ── Asientos contables ──
     const prod=products.find(x=>x.id===mF.productId);
@@ -1449,12 +1490,12 @@ function InventorySection({rates,userId,accounts,entries,setEntries}){
     const price=parseFloat(mkF.price); if(isNaN(price)||price<0) return setErr("Precio inválido.");
     const entry={id:genId(),productId:mkF.productId,date:mkF.date,price,source:mkF.source,createdAt:new Date().toISOString()};
     const newMkt={...mkt,[mkF.productId]:[...(mkt[mkF.productId]||[]),entry].sort((a,b)=>b.date.localeCompare(a.date))};
-    setMkt(newMkt); lsSave("ac_inv_mktprice",newMkt); dbUpsert("ac_inv_product_market",userId,entry,"ac_inv_mktprice_rows",[...Object.values(newMkt).flat()]);
+    setMkt(newMkt); lsSave("ac_inv_mktprice",newMkt); dbUpsert("ac_inv_product_market", userId, entityId, entry,"ac_inv_mktprice_rows",[...Object.values(newMkt).flat()]);
     setMsg({ok:true,text:"Precio registrado."}); setView(sel?"detail":"list");setMkF(eMk);setTimeout(()=>setMsg(null),3000);
   }
   function delProd(id){
     if(!confirm("¿Eliminar producto?")) return;
-    const u=products.filter(p=>p.id!==id); setProducts(u); dbDelete("ac_inv_products",userId,id,"ac_inv_prods",u);
+    const u=products.filter(p=>p.id!==id); setProducts(u); dbDelete("ac_inv_products", userId, id, "ac_inv_prods", entityId, u);
     const um=movs.filter(m=>m.productId!==id); setMovs(um); lsSave("ac_inv_movs",um);
     const mk2={...mkt};delete mk2[id];setMkt(mk2);lsSave("ac_inv_mktprice",mk2);
     if(sel?.id===id){setSel(null);setView("list");}
@@ -1605,15 +1646,15 @@ function InventorySection({rates,userId,accounts,entries,setEntries}){
 // ════════════════════════════════════════════════════════════════
 //  FIXED ASSETS SECTION
 // ════════════════════════════════════════════════════════════════
-function FixedAssetsSection({rates,userId}){
+function FixedAssetsSection({rates,userId,entityId}){
   const [assets,setAssets]=useState(()=>lsLoad("ac_fa",[]));
   const [mkt,setMkt]=useState(()=>lsLoad("ac_fa_mkt",{}));
   const [view,setView]=useState("list"); const [sel,setSel]=useState(null); const [msg,setMsg]=useState(null); const [err,setErr]=useState("");
 
   useEffect(()=>{
     if(!userId) return;
-    dbLoad("ac_fixed_assets",userId,"ac_fa",[]).then(setAssets);
-    dbLoad("ac_fixed_assets_market",userId,"ac_fa_mkt_rows",[]).then(rows=>{
+    dbLoad("ac_fixed_assets", userId, entityId, "ac_fa",[]).then(setAssets);
+    dbLoad("ac_fixed_assets_market", userId, entityId, "ac_fa_mkt_rows",[]).then(rows=>{
       const map={};
       rows.forEach(r=>{ if(!map[r.assetId]) map[r.assetId]=[]; map[r.assetId].push(r); });
       Object.keys(map).forEach(k=>map[k].sort((a,b)=>b.date.localeCompare(a.date)));
@@ -1641,7 +1682,7 @@ function FixedAssetsSection({rates,userId}){
     const life=parseInt(aF.usefulLife); if(!life||life<1) return setErr("Vida útil inválida.");
     const a={id:sel?.id||genId(),...aF,acquisitionCost:cost,usefulLife:life,residualValue:parseFloat(aF.residualValue)||0,createdAt:sel?.createdAt||new Date().toISOString()};
     const u=assets.find(x=>x.id===a.id)?assets.map(x=>x.id===a.id?a:x):[...assets,a];
-    setAssets(u); dbUpsert("ac_fixed_assets",userId,a,"ac_fa",u);
+    setAssets(u); dbUpsert("ac_fixed_assets", userId, entityId, a,"ac_fa",u);
     setMsg({ok:true,text:`"${a.name}" guardado.`}); setView("list");setSel(null);setAF(eA);setTimeout(()=>setMsg(null),3000);
   }
   function saveMk(){
@@ -1649,12 +1690,12 @@ function FixedAssetsSection({rates,userId}){
     const price=parseFloat(mkF.price); if(isNaN(price)||price<0) return setErr("Precio inválido.");
     const entry={id:genId(),assetId:mkF.assetId,date:mkF.date,price,source:mkF.source,createdAt:new Date().toISOString()};
     const newMkt={...mkt,[mkF.assetId]:[...(mkt[mkF.assetId]||[]),entry].sort((a,b)=>b.date.localeCompare(a.date))};
-    setMkt(newMkt); lsSave("ac_fa_mkt",newMkt); dbUpsert("ac_fixed_assets_market",userId,entry,"ac_fa_mkt_rows",[...Object.values(newMkt).flat()]);
+    setMkt(newMkt); lsSave("ac_fa_mkt",newMkt); dbUpsert("ac_fixed_assets_market", userId, entityId, entry,"ac_fa_mkt_rows",[...Object.values(newMkt).flat()]);
     setMsg({ok:true,text:"Precio registrado."}); setView("list");setMkF(eMk);setTimeout(()=>setMsg(null),3000);
   }
   function delAsset(id){
     if(!confirm("¿Eliminar activo?")) return;
-    const u=assets.filter(a=>a.id!==id); setAssets(u); dbDelete("ac_fixed_assets",userId,id,"ac_fa",u);
+    const u=assets.filter(a=>a.id!==id); setAssets(u); dbDelete("ac_fixed_assets", userId, id, "ac_fa", entityId, u);
     if(sel?.id===id){setSel(null);setView("list");}
   }
   if(view==="new"||view==="edit") return <div style={S.card}><div style={S.cHead()}><span style={S.cTitle}>{view==="edit"?"Editar":"Nuevo"} Activo Fijo</span></div><div style={S.cBody}>
@@ -1706,6 +1747,80 @@ function FixedAssetsSection({rates,userId}){
 
 
 // ════════════════════════════════════════════════════════════════
+//  ENTITY MANAGER
+// ════════════════════════════════════════════════════════════════
+function EntityManager({entities,setEntities,userId,onClose}){
+  const [view,setView]=useState("list");
+  const [f,setF]=useState({rut:"",name:"",giro:""});
+  const [sel,setSel]=useState(null);
+  const [err,setErr]=useState("");
+
+  const formatRut=v=>{
+    const clean=v.replace(/[^0-9kK]/g,"");
+    if(clean.length<2) return clean;
+    const body=clean.slice(0,-1), dv=clean.slice(-1).toUpperCase();
+    return body.replace(/\B(?=(\d{3})+(?!\d))/g,".")+"-"+dv;
+  };
+
+  function save(){
+    setErr("");
+    if(!f.rut.trim()) return setErr("RUT obligatorio.");
+    if(!f.name.trim()) return setErr("Razón social obligatoria.");
+    const entity={id:sel?.id||genId(),rut:f.rut.trim(),name:f.name.trim(),giro:f.giro.trim(),createdAt:sel?.createdAt||new Date().toISOString()};
+    const u=entities.find(e=>e.id===entity.id)?entities.map(e=>e.id===entity.id?entity:e):[...entities,entity];
+    setEntities(u); dbUpsertEntity(userId,entity,u);
+    setView("list"); setSel(null); setF({rut:"",name:"",giro:""});
+  }
+  function del(id){
+    if(!confirm("¿Eliminar empresa? Se eliminarán todos sus datos.")) return;
+    const u=entities.filter(e=>e.id!==id); setEntities(u); dbDeleteEntity(userId,id,u);
+  }
+
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+    <div style={{background:"#fff",borderRadius:6,width:580,maxHeight:"80vh",overflowY:"auto",boxShadow:"0 20px 60px rgba(0,0,0,.3)"}}>
+      <div style={{...S.cHead(),borderRadius:"6px 6px 0 0"}}>
+        <span style={S.cTitle}>🏢 Gestión de Empresas</span>
+        <div style={{display:"flex",gap:8}}>
+          {view==="list"&&<Btn sm onClick={()=>{setF({rut:"",name:"",giro:""});setSel(null);setView("new");}}>+ Nueva empresa</Btn>}
+          <Btn sm v="outline" onClick={onClose}>✕ Cerrar</Btn>
+        </div>
+      </div>
+      <div style={S.cBody}>
+        {view==="list"&&<>
+          {entities.length===0&&<div style={{...S.empty,padding:30}}><div style={{fontSize:32}}>🏢</div><div style={{color:C.muted,marginTop:8}}>Sin empresas. Crea la primera.</div></div>}
+          {entities.map(e=><div key={e.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 0",borderBottom:`1px solid ${C.border}`}}>
+            <div>
+              <div style={{fontFamily:"'Georgia',serif",fontWeight:700,fontSize:14}}>{e.name}</div>
+              <div style={{fontSize:11,color:C.muted,marginTop:2}}>RUT: {e.rut}{e.giro?` · ${e.giro}`:""}</div>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <Btn sm v="outline" onClick={()=>{setSel(e);setF({rut:e.rut,name:e.name,giro:e.giro||""});setView("edit");}}>Editar</Btn>
+              <Btn sm v="danger" onClick={()=>del(e.id)}>✕</Btn>
+            </div>
+          </div>)}
+        </>}
+        {(view==="new"||view==="edit")&&<>
+          {err&&<Msg>{err}</Msg>}
+          <div style={{...S.g2,marginBottom:14}}>
+            <div>
+              <label style={S.label}>RUT *</label>
+              <input style={S.input} placeholder="76.123.456-7" value={f.rut}
+                onChange={e=>setF(p=>({...p,rut:formatRut(e.target.value)}))}/>
+            </div>
+            <Inp label="Razón Social *" placeholder="Viento Sur SpA" value={f.name} onChange={e=>setF(p=>({...p,name:e.target.value}))}/>
+          </div>
+          <Inp label="Giro" placeholder="Inversiones y rentas" value={f.giro} onChange={e=>setF(p=>({...p,giro:e.target.value}))}/>
+          <div style={{display:"flex",gap:10,marginTop:18}}>
+            <Btn onClick={save}>{view==="edit"?"Guardar cambios":"Crear empresa"}</Btn>
+            <Btn v="outline" onClick={()=>{setView("list");setSel(null);}}>Cancelar</Btn>
+          </div>
+        </>}
+      </div>
+    </div>
+  </div>;
+}
+
+// ════════════════════════════════════════════════════════════════
 //  MAIN APP
 // ════════════════════════════════════════════════════════════════
 const SECTIONS=[
@@ -1721,16 +1836,32 @@ export default function App(){
   const [section,setSection]=useState("accounting");
   const [accTab,setAccTab]=useState("new");
   const {rates,meta,fetchRates}=useFxRates();
+  const [showEntityMgr,setShowEntityMgr]=useState(false);
 
-  // Shared accounting state — loaded from Supabase on login
-  const [accounts,setAccounts]=useState(()=>lsLoad("ac_accounts",DEFAULT_ACCOUNTS));
-  const [entries, setEntries] =useState(()=>lsLoad("ac_entries",[]));
+  const [entities,setEntities]=useState(()=>lsLoad("ac_entities",[]));
+  const [entityId,setEntityId]=useState(()=>lsLoad("ac_current_entity",null));
+  const entity=entities.find(e=>e.id===entityId)||null;
+
+  const [accounts,setAccounts]=useState(()=>lsLoad("ac_accounts"+(entityId?":"+entityId:""),DEFAULT_ACCOUNTS));
+  const [entries, setEntries] =useState(()=>lsLoad("ac_entries"+(entityId?":"+entityId:""),[]));
 
   useEffect(()=>{
     if(!user) return;
-    dbLoadAccounts(user.id).then(setAccounts);
-    dbLoadEntries(user.id).then(setEntries);
+    dbLoadEntities(user.id).then(ents=>{
+      setEntities(ents);
+      const saved=lsLoad("ac_current_entity",null);
+      if(!saved && ents.length>0){ setEntityId(ents[0].id); lsSave("ac_current_entity",ents[0].id); }
+    });
   },[user]);
+
+  useEffect(()=>{
+    if(!user) return;
+    lsSave("ac_current_entity",entityId);
+    dbLoadAccounts(user.id, entityId).then(setAccounts);
+    dbLoadEntries(user.id, entityId).then(setEntries);
+  },[user, entityId]);
+
+  function selectEntity(id){ setEntityId(id); setSection("accounting"); setAccTab("new"); }
 
   if(loading) return(
     <div style={{background:"#0f172a",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -1745,11 +1876,24 @@ export default function App(){
 
   return(
     <div style={S.app}>
-      {/* Top bar */}
+      {showEntityMgr&&<EntityManager entities={entities} setEntities={setEntities} userId={uid} onClose={()=>setShowEntityMgr(false)}/>}
       <header style={S.topBar}>
-        <div>
-          <div style={S.logo}>⚖ LibroDiario</div>
-          <div style={S.logosub}>Sistema Contable Integrado</div>
+        <div style={{display:"flex",alignItems:"center",gap:16}}>
+          <div>
+            <div style={S.logo}>⚖ LibroDiario</div>
+            <div style={S.logosub}>Sistema Contable Integrado</div>
+          </div>
+          <div style={{borderLeft:"1px solid #334155",paddingLeft:16,display:"flex",alignItems:"center",gap:8}}>
+            {entities.length===0
+              ? <button onClick={()=>setShowEntityMgr(true)} style={{...S.bsm(C.gold,"#0f172a"),fontSize:11,padding:"4px 10px"}}>+ Crear empresa</button>
+              : <select value={entityId||""} onChange={e=>selectEntity(e.target.value)}
+                  style={{background:"#1e293b",border:`1px solid ${C.gold}`,borderRadius:3,color:"#fff",padding:"4px 8px",fontSize:12,fontFamily:"'Georgia',serif",cursor:"pointer",maxWidth:200}}>
+                  <option value="">— Sin empresa —</option>
+                  {entities.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}
+                </select>
+            }
+            <button onClick={()=>setShowEntityMgr(true)} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:13,padding:"2px 4px"}} title="Gestionar empresas">⚙</button>
+          </div>
         </div>
         <nav style={{display:"flex",alignItems:"center"}}>
           {SECTIONS.map(s=>(
@@ -1757,34 +1901,33 @@ export default function App(){
               {s.icon} {s.label}
             </button>
           ))}
-          {/* User info + sign out */}
           <div style={{display:"flex",alignItems:"center",gap:10,marginLeft:20,paddingLeft:20,borderLeft:"1px solid #334155"}}>
-            <span style={{fontSize:11,color:"#94a3b8",maxWidth:140,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user.email||user.user_metadata?.full_name||"Usuario"}</span>
+            {entity&&<div style={{textAlign:"right"}}>
+              <div style={{fontSize:10,color:C.gold,fontWeight:700}}>{entity.name}</div>
+              <div style={{fontSize:9,color:C.muted}}>RUT {entity.rut}</div>
+            </div>}
+            <span style={{fontSize:11,color:"#94a3b8",maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user.email||user.user_metadata?.full_name||"Usuario"}</span>
             <button onClick={signOut} style={{...S.bsm("transparent","#94a3b8"),border:"1px solid #334155",fontSize:10}}>Salir</button>
           </div>
         </nav>
       </header>
-
-      {/* FX bar */}
+      {!entity&&entities.length>0&&<div style={{background:"#7c3aed",color:"#fff",textAlign:"center",padding:"8px",fontSize:12}}>⚠ Selecciona una empresa en el selector superior para ver y registrar datos.</div>}
+      {!entity&&entities.length===0&&<div style={{background:C.gold,color:"#0f172a",textAlign:"center",padding:"8px",fontSize:12,fontWeight:700}}>👆 Crea tu primera empresa haciendo clic en "+ Crear empresa" para comenzar.</div>}
       <FxBar rates={rates} meta={meta} fetchRates={fetchRates}/>
-
-      {/* Sub-tabs for accounting */}
       {section==="accounting"&&(
         <div style={S.subBar}>
           {currentSection.tabs.map(t=><button key={t.id} style={S.subTab(accTab===t.id)} onClick={()=>setAccTab(t.id)}>{t.label}</button>)}
         </div>
       )}
-
-      {/* Body */}
       <main style={S.body}>
-        {section==="accounting"&&accTab==="new"      &&<NewEntryTab  accounts={accounts} entries={entries} setEntries={setEntries} userId={uid}/>}
-        {section==="accounting"&&accTab==="entries"  &&<EntriesTab   accounts={accounts} entries={entries} setEntries={setEntries} userId={uid}/>}
+        {section==="accounting"&&accTab==="new"      &&<NewEntryTab  accounts={accounts} entries={entries} setEntries={setEntries} userId={uid} entityId={entityId}/>}
+        {section==="accounting"&&accTab==="entries"  &&<EntriesTab   accounts={accounts} entries={entries} setEntries={setEntries} userId={uid} entityId={entityId}/>}
         {section==="accounting"&&accTab==="reports"  &&<ReportsTab   accounts={accounts} entries={entries}/>}
-        {section==="accounting"&&accTab==="accounts" &&<AccountsTab  accounts={accounts} setAccounts={setAccounts} userId={uid}/>}
-        {section==="liabilities"&&<LiabilitiesSection rates={rates} userId={uid} accounts={accounts} entries={entries} setEntries={setEntries}/>}
-        {section==="investments"&&<InvestmentsSection  rates={rates} userId={uid} accounts={accounts} entries={entries} setEntries={setEntries}/>}
-        {section==="inventory"  &&<InventorySection    rates={rates} userId={uid} accounts={accounts} entries={entries} setEntries={setEntries}/>}
-        {section==="fixed"      &&<FixedAssetsSection  rates={rates} userId={uid}/>}
+        {section==="accounting"&&accTab==="accounts" &&<AccountsTab  accounts={accounts} setAccounts={setAccounts} userId={uid} entityId={entityId}/>}
+        {section==="liabilities"&&<LiabilitiesSection rates={rates} userId={uid} entityId={entityId} accounts={accounts} entries={entries} setEntries={setEntries}/>}
+        {section==="investments"&&<InvestmentsSection  rates={rates} userId={uid} entityId={entityId} accounts={accounts} entries={entries} setEntries={setEntries}/>}
+        {section==="inventory"  &&<InventorySection    rates={rates} userId={uid} entityId={entityId} accounts={accounts} entries={entries} setEntries={setEntries}/>}
+        {section==="fixed"      &&<FixedAssetsSection  rates={rates} userId={uid} entityId={entityId}/>}
       </main>
     </div>
   );
