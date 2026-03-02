@@ -558,6 +558,7 @@ function ReportsTab({accounts,entries}){
   // Libro diario: rango libre
   const [ldFrom,setLdFrom]=useState("");
   const [ldTo,setLdTo]=useState("");
+  const [selAccCode,setSelAccCode]=useState(null); // selected account for Cuenta T view
 
   // ── Filtered sets ──
   const balEntries=useMemo(()=>
@@ -855,15 +856,18 @@ function ReportsTab({accounts,entries}){
       });
       const sortedAccs=Object.keys(tData).sort();
       if(sortedAccs.length===0) return <div style={{...S.card,...S.empty}}><div style={{color:C.muted}}>Sin movimientos en el período</div></div>;
-      return <div>{sortedAccs.map(code=>{
+
+      // Ensure selAccCode is valid, default to first
+      const activeCode = (selAccCode && tData[selAccCode]) ? selAccCode : sortedAccs[0];
+
+      // Render account T detail
+      function renderT(code){
         const acc=accMap[code]||{name:code,type:"?"};
         const {debit,credit}=tData[code];
         const totD=debit.reduce((s,r)=>s+r.amount,0);
         const totC=credit.reduce((s,r)=>s+r.amount,0);
         const saldo=totD-totC;
-        const maxRows=Math.max(debit.length,credit.length);
-        return <div key={code} style={{...S.card,marginBottom:20}}>
-          {/* Header */}
+        return <div style={S.card}>
           <div style={{...S.cHead(),borderRadius:"4px 4px 0 0"}}>
             <div style={{display:"flex",alignItems:"center",gap:12}}>
               <code style={{fontSize:13,color:C.gold,fontWeight:700}}>{code}</code>
@@ -876,19 +880,15 @@ function ReportsTab({accounts,entries}){
               <span style={{color:C.gold}}>Saldo: <b style={{color:saldo>=0?"#86efac":"#fca5a5"}}>{saldo>=0?"+":""}{fmtCLP(saldo)}</b></span>
             </div>
           </div>
-          {/* T table */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",borderBottom:`1px solid ${C.border}`}}>
-            {/* Debit header */}
             <div style={{background:"#f0fdf4",padding:"7px 14px",borderRight:`1px solid ${C.border}`,borderBottom:`1px solid ${C.border}`}}>
               <span style={{fontSize:10,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.green}}>DEBE</span>
             </div>
-            {/* Credit header */}
             <div style={{background:"#fef2f2",padding:"7px 14px",borderBottom:`1px solid ${C.border}`}}>
               <span style={{fontSize:10,fontWeight:700,letterSpacing:2,textTransform:"uppercase",color:C.danger}}>HABER</span>
             </div>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr"}}>
-            {/* Debit column */}
             <div style={{borderRight:`1px solid ${C.border}`}}>
               {debit.length===0
                 ? <div style={{padding:"10px 14px",fontSize:12,color:C.muted,fontStyle:"italic"}}>Sin movimientos</div>
@@ -905,7 +905,6 @@ function ReportsTab({accounts,entries}){
                 <span style={{fontWeight:700,fontSize:13,color:C.green}}>{fmtCLP(totD)}</span>
               </div>}
             </div>
-            {/* Credit column */}
             <div>
               {credit.length===0
                 ? <div style={{padding:"10px 14px",fontSize:12,color:C.muted,fontStyle:"italic"}}>Sin movimientos</div>
@@ -923,13 +922,54 @@ function ReportsTab({accounts,entries}){
               </div>}
             </div>
           </div>
-          {/* Saldo footer */}
           <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:8,padding:"8px 16px",background:"#f8fafc",borderTop:`1px solid ${C.border}`}}>
             <span style={{fontSize:10,letterSpacing:1,textTransform:"uppercase",color:C.muted}}>Saldo</span>
             <span style={{fontWeight:700,fontSize:14,color:saldo>=0?C.green:C.danger}}>{saldo>=0?"+":""}{fmtCLP(saldo)}</span>
           </div>
         </div>;
-      })}</div>;
+      }
+
+      return <div style={{display:"grid",gridTemplateColumns:"220px 1fr",gap:16,alignItems:"start"}}>
+        {/* Left: account list */}
+        <div style={S.card}>
+          <div style={{...S.cHead(),padding:"10px 14px"}}><span style={{...S.cTitle,fontSize:11}}>CUENTAS ({sortedAccs.length})</span></div>
+          <div style={{overflowY:"auto",maxHeight:600}}>
+            {sortedAccs.map(code=>{
+              const acc=accMap[code]||{name:code,type:"?"};
+              const d=tData[code];
+              const totD=d.debit.reduce((s,r)=>s+r.amount,0);
+              const totC=d.credit.reduce((s,r)=>s+r.amount,0);
+              const saldo=totD-totC;
+              const isActive=code===activeCode;
+              return <div key={code}
+                onClick={()=>setSelAccCode(code)}
+                style={{padding:"9px 14px",borderBottom:`1px solid ${C.border}`,cursor:"pointer",
+                  background:isActive?C.navy:"#fff",
+                  borderLeft:isActive?`3px solid ${C.gold}`:"3px solid transparent",
+                  transition:"background 0.1s"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:6}}>
+                  <div style={{minWidth:0}}>
+                    <code style={{fontSize:10,color:isActive?C.gold:C.muted,display:"block"}}>{code}</code>
+                    <div style={{fontSize:12,fontWeight:isActive?700:400,color:isActive?"#fff":C.navy,
+                      overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:130,
+                      fontFamily:"'Georgia',serif"}}>{acc.name}</div>
+                  </div>
+                  <div style={{textAlign:"right",whiteSpace:"nowrap"}}>
+                    <div style={{fontSize:10,fontWeight:700,color:saldo>=0?(isActive?"#86efac":C.green):(isActive?"#fca5a5":C.danger)}}>
+                      {saldo>=0?"+":""}{fmtCLP(Math.abs(saldo))}
+                    </div>
+                    <div style={{fontSize:9,color:isActive?"#94a3b8":C.muted}}>
+                      {d.debit.length+d.credit.length} mov
+                    </div>
+                  </div>
+                </div>
+              </div>;
+            })}
+          </div>
+        </div>
+        {/* Right: selected account T */}
+        <div>{renderT(activeCode)}</div>
+      </div>;
     })()}
 
     {/* ── Libro Diario ── */}
