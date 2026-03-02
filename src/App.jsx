@@ -12,7 +12,7 @@ const sb = createClient(
 );
 
 // ── Helpers ──
-function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+function genId() { return crypto.randomUUID(); }
 function today() { return new Date().toISOString().slice(0,10); }
 function lsLoad(k,fb){ try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb;}catch{return fb;} }
 function lsSave(k,v){ try{localStorage.setItem(k,JSON.stringify(v));}catch{} }
