@@ -587,12 +587,26 @@ function ReportsTab({accounts,entries}){
     return b;
   },[balEntries]);
 
+  // Cuentas conocidas con movimientos
   const trial=useMemo(()=>accounts.filter(a=>balances[a.code]).map(a=>{
     const b=balances[a.code]||{debit:0,credit:0};
     return{...a,...b,saldo:b.debit-b.credit};
   }).sort((a,b_)=>a.code.localeCompare(b_.code)),[accounts,balances]);
 
-  const totD=trial.reduce((s,r)=>s+r.debit,0), totC=trial.reduce((s,r)=>s+r.credit,0);
+  // Cuentas con movimientos pero SIN definir en el plan — no deben perderse del total
+  const unmappedCodes=useMemo(()=>{
+    const known=new Set(accounts.map(a=>a.code));
+    return Object.keys(balances).filter(c=>!known.has(c));
+  },[accounts,balances]);
+  const unmappedRows=useMemo(()=>unmappedCodes.map(c=>({
+    code:c, name:`⚠ Sin mapear (${c})`, type:"?",
+    debit:balances[c].debit, credit:balances[c].credit,
+    saldo:balances[c].debit-balances[c].credit
+  })),[unmappedCodes,balances]);
+
+  // Totales REALES desde balances completos (incluye no mapeadas)
+  const totD=useMemo(()=>Object.values(balances).reduce((s,b)=>s+b.debit,0),[balances]);
+  const totC=useMemo(()=>Object.values(balances).reduce((s,b)=>s+b.credit,0),[balances]);
 
   // ── EERR ──
   const eerrBalances=useMemo(()=>{
@@ -725,17 +739,32 @@ function ReportsTab({accounts,entries}){
         <span style={S.cTitle}>Balance de Comprobación{balCutoff?` — acumulado hasta ${fmtMonthLabel(balCutoff)}`:""}</span>
         <span style={{background:Math.abs(totD-totC)<1?"#dcfce7":"#fef2f2",color:Math.abs(totD-totC)<1?C.green:C.danger,padding:"3px 10px",borderRadius:10,fontSize:10,fontWeight:700}}>{Math.abs(totD-totC)<1?"✓ Balanceado":"⚠ Desbalanceado"}</span>
       </div>
-      {trial.length===0?<div style={S.empty}><div style={{fontFamily:"'Georgia',serif",color:C.muted}}>Sin movimientos en el período</div></div>
-      :<div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12.5}}>
+      {trial.length===0&&unmappedRows.length===0?<div style={S.empty}><div style={{fontFamily:"'Georgia',serif",color:C.muted}}>Sin movimientos en el período</div></div>
+      :<div style={{overflowX:"auto"}}>
+        {unmappedRows.length>0&&<div style={{background:"#fef9c3",border:"1px solid #f59e0b",borderRadius:3,padding:"8px 14px",margin:"0 0 8px",fontSize:12,color:"#92400e"}}>
+          ⚠ Hay {unmappedRows.length} cuenta(s) con movimientos no definidas en el plan de cuentas. Agrégalas en <b>Plan de Cuentas</b> para clasificarlas correctamente.
+          {unmappedRows.map(r=><span key={r.code} style={{marginLeft:8,fontFamily:"monospace",fontWeight:700}}>{r.code}</span>)}
+        </div>}
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12.5}}>
         <thead><tr>{["Código","Cuenta","Tipo","Débito Acum.","Crédito Acum.","Saldo"].map((h,i)=><th key={i} style={{...S.th,textAlign:i>=3?"right":"left"}}>{h}</th>)}</tr></thead>
-        <tbody>{trial.map((r,i)=><tr key={r.code} style={{background:i%2===0?"#fafaf9":"#fff"}}>
-          <td style={{...S.td,fontFamily:"monospace",fontSize:11,color:C.muted}}>{r.code}</td>
-          <td style={{...S.td,fontFamily:"'Georgia',serif"}}>{r.name}</td>
-          <td style={S.td}><span style={S.tag(r.type)}>{r.type}</span></td>
-          <td style={{...S.td,textAlign:"right"}}>{r.debit>0?fmtCLP(r.debit):"—"}</td>
-          <td style={{...S.td,textAlign:"right"}}>{r.credit>0?fmtCLP(r.credit):"—"}</td>
-          <td style={{...S.td,textAlign:"right",fontWeight:700,color:r.saldo>=0?C.navy:C.danger}}>{r.saldo>=0?fmtCLP(r.saldo):`(${fmtCLP(Math.abs(r.saldo))})`}</td>
-        </tr>)}</tbody>
+        <tbody>
+          {trial.map((r,i)=><tr key={r.code} style={{background:i%2===0?"#fafaf9":"#fff"}}>
+            <td style={{...S.td,fontFamily:"monospace",fontSize:11,color:C.muted}}>{r.code}</td>
+            <td style={{...S.td,fontFamily:"'Georgia',serif"}}>{r.name}</td>
+            <td style={S.td}><span style={S.tag(r.type)}>{r.type}</span></td>
+            <td style={{...S.td,textAlign:"right"}}>{r.debit>0?fmtCLP(r.debit):"—"}</td>
+            <td style={{...S.td,textAlign:"right"}}>{r.credit>0?fmtCLP(r.credit):"—"}</td>
+            <td style={{...S.td,textAlign:"right",fontWeight:700,color:r.saldo>=0?C.navy:C.danger}}>{r.saldo>=0?fmtCLP(r.saldo):`(${fmtCLP(Math.abs(r.saldo))})`}</td>
+          </tr>)}
+          {unmappedRows.map((r,i)=><tr key={r.code} style={{background:"#fef9c3"}}>
+            <td style={{...S.td,fontFamily:"monospace",fontSize:11,color:"#92400e",fontWeight:700}}>{r.code}</td>
+            <td style={{...S.td,color:"#92400e"}}>{r.name}</td>
+            <td style={{...S.td,color:"#92400e",fontSize:11}}>Sin clasificar</td>
+            <td style={{...S.td,textAlign:"right",color:"#92400e"}}>{r.debit>0?fmtCLP(r.debit):"—"}</td>
+            <td style={{...S.td,textAlign:"right",color:"#92400e"}}>{r.credit>0?fmtCLP(r.credit):"—"}</td>
+            <td style={{...S.td,textAlign:"right",fontWeight:700,color:"#92400e"}}>{r.saldo>=0?fmtCLP(r.saldo):`(${fmtCLP(Math.abs(r.saldo))})`}</td>
+          </tr>)}
+        </tbody>
         <tfoot><tr style={{background:C.navy}}>
           <td colSpan={3} style={{...S.td,color:C.gold,fontWeight:700,fontSize:10,letterSpacing:2,textTransform:"uppercase"}}>Total</td>
           <td style={{...S.td,textAlign:"right",color:"#fff",fontWeight:700}}>{fmtCLP(totD)}</td>
