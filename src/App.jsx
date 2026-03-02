@@ -1057,7 +1057,7 @@ function EditCell({value,onChange}){
 //  LIABILITIES TAB
 // ════════════════════════════════════════════════════════════════
 function LiabilityForm({onSave,onCancel,initial,entries}){
-  const empty={name:"",lender:"",currency:"CLP",originalAmount:"",annualRate:"",months:"",startDate:today(),system:"frances",notes:"",tags:"",accountingCode:"2400"};
+  const empty={name:"",lender:"",currency:"CLP",originalAmount:"",annualRate:"",months:"",startDate:today(),system:"frances",notes:"",tags:"",accountingCode:"2400",bankAccount:"1111"};
   const [f,setF]=useState(initial||empty);
   const [customRows,setCustomRows]=useState(initial?.system==="personalizado"?(initial.amortTable||[]):[]);
   const [err,setErr]=useState("");
@@ -1173,6 +1173,15 @@ function LiabilityForm({onSave,onCancel,initial,entries}){
           <option value="2400">2400 – Préstamo Bancario LP</option>
         </select>
         <div style={{fontSize:10.5,color:C.muted,marginTop:4}}>Al marcar una cuota como pagada se generarán asientos automáticos usando esta cuenta.</div>
+      </div>
+      <div style={{marginBottom:16}}>
+        <label style={S.label}>Cuenta bancaria de pago (para asientos automáticos al pagar cuota)</label>
+        <select style={S.select} value={f.bankAccount||"1111"} onChange={e=>upd("bankAccount",e.target.value)}>
+          <option value="1111">1111 – Banco Consorcio</option>
+          <option value="1112">1112 – Consorcio Corredores de Bolsa</option>
+          <option value="1110">1110 – Banco Cuenta Corriente</option>
+          <option value="1100">1100 – Caja</option>
+        </select>
       </div>
       <Field label="Notas"><textarea style={S.textarea} value={f.notes} onChange={e=>upd("notes",e.target.value)} placeholder="Condiciones, garantías…"/></Field>
 
@@ -1630,96 +1639,125 @@ function LiabilitiesSection({rates,userId,entityId,accounts,entries,setEntries})
     const liability=liabilities.find(l=>l.id===lid);
     const row=liability?.amortTable?.[idx];
     if(!row) return;
-    const wasPaid=row.paid;
-    const nowPaying=!wasPaid;
+    const nowPaying=!row.paid;
 
-    // Update amortTable state
+    // ── 1. Update amortTable state ──
+    let updatedLiab;
     const u=liabilities.map(l=>{
       if(l.id!==lid) return l;
       const t=l.amortTable.map((r,i)=>i===idx?{...r,paid:!r.paid}:r);
-      const updated={...l,amortTable:t};
-      dbUpsert("ac_liabilities", userId, entityId, updated,"ac_liabilities",u);
-      return updated;
+      updatedLiab={...l,amortTable:t};
+      return updatedLiab;
     });
-    setLiabilities(u); lsSave("ac_liabilities",u);
+    setLiabilities(u);
+    lsSave("ac_liabilities",u);
+    dbUpsert("ac_liabilities", userId, entityId, updatedLiab, "ac_liabilities", u);
     if(sel?.id===lid) setSel(u.find(x=>x.id===lid));
 
-    // ── Generar asientos contables al pagar cuota ──
-    if(nowPaying && liability){
-      const isUF = liability.currency==="UF";
-      const ufRate = rates["UF"]||37500;
-      const currency = liability.currency;
+    if(!nowPaying) return; // desmarcar: solo revierte estado, no toca asientos
 
-      // Convertir montos a CLP
-      const toCLPLocal = (v) => {
-        if(currency==="CLP") return Math.round(v);
-        if(currency==="UF")  return Math.round(v*ufRate);
-        if(currency==="USD") return Math.round(v*(rates["USD"]||950));
-        if(currency==="EUR") return Math.round(v*(rates["EUR"]||1030));
-        return Math.round(v);
-      };
+    // ── 2. Generar asientos contables ──
+    const isUF    = liability.currency==="UF";
+    const ufNow   = rates["UF"]||37500;   // UF actual (proxy para el mes)
+    const currency= liability.currency;
+    const liabAccCode    = liability.accountingCode||"2400";
+    const reajAccCode    = "2440";   // siempre Reajuste UF Deuda
+    const interesAccCode = "5350";   // Intereses Pagados
+    const cajAcc         = liability.bankAccount||"1111";
 
-      const capitalCLP = toCLPLocal(row.capital);
-      const interesCLP = toCLPLocal(row.interest);
-      const cuotaCLP   = capitalCLP + interesCLP;
+    // Convertir UF→CLP usando UF actual
+    const toCLP = v => {
+      if(currency==="CLP") return Math.round(v);
+      if(currency==="UF")  return Math.round(v*ufNow);
+      if(currency==="USD") return Math.round(v*(rates["USD"]||950));
+      if(currency==="EUR") return Math.round(v*(rates["EUR"]||1030));
+      return Math.round(v);
+    };
 
-      // Cuenta del pasivo — intentar detectar por etiquetas o usar 2400 por defecto
-      const liabAccCode = liability.accountingCode || "2400";
-      const currentEntries = lsLoad("ac_entries",[]);
+    // Entries key con entityId (fix clave localStorage)
+    const entriesKey = "ac_entries"+(entityId?":"+entityId:"");
+    let curEntries = lsLoad(entriesKey, entries);
 
-      // ── Asiento 1: Reajuste UF (solo si es UF) ──
-      if(isUF){
-        // Calcular reajuste del período: capital pendiente antes de esta cuota × variación UF
-        // Usamos la UF actual vs UF del mes anterior (aproximado con 1% mensual si no tenemos histórico)
-        const paidBefore = liability.amortTable.slice(0,idx).filter(r=>r.paid).reduce((s,r)=>s+r.capital,0);
-        const saldoUF = liability.originalAmount - paidBefore;
-        // Reajuste estimado = saldo × (UF actual - UF mes anterior) / UF mes anterior
-        // Sin histórico UF usamos variación mensual implícita de la tasa
-        const ufMesAnterior = ufRate / (1 + (liability.annualRate||3)/100/12);
-        const reajusteCLP = Math.round(saldoUF * (ufRate - ufMesAnterior));
+    // ── Asiento A: Reajuste UF del período (si es UF) ──
+    // Saldo en UF antes de esta cuota × variación IPC del mes
+    // Usamos la diferencia entre UF actual y UF inicio del período
+    // El saldo de 2440 acumula reajustes previos — aquí solo registramos el del período
+    if(isUF){
+      // Saldo UF pendiente ANTES de esta cuota
+      const paidCapBefore = liability.amortTable.slice(0,idx).filter(r=>r.paid).reduce((s,r)=>s+r.capital,0);
+      const saldoUF = liability.originalAmount - paidCapBefore;
 
-        if(reajusteCLP > 0){
-          const n1 = currentEntries.length + 1;
-          const e1 = {
-            id:genId(), number:n1, date:row.date,
-            description:`Reajuste UF cuota ${row.period} — ${liability.name}`,
-            reference:"Auto-Pasivos",
-            rows:[
-              {id:genId(),account:"5241",debit:reajusteCLP,credit:0},
-              {id:genId(),account:liabAccCode,debit:0,credit:reajusteCLP},
-            ],
-            totalDebit:reajusteCLP, totalCredit:reajusteCLP,
-            createdAt:new Date().toISOString()
-          };
-          const updated1=[...currentEntries,e1];
-          setEntries(updated1);
-          await dbUpsertEntry(userId, entityId, e1, updated1);
-        }
-      }
+      // Variación UF del mes de la cuota: usamos IPC del mes como proxy
+      // Si el crédito tiene ufInicio registrado usamos diferencia real, si no aproximamos con 0.3%
+      const ufInicioPeriodo = liability.ufInicioPeriodo || (ufNow / 1.003);
+      const varUF = ufNow - ufInicioPeriodo; // CLP por UF de variación
+      const reajCLP = Math.round(saldoUF * varUF);
 
-      // ── Asiento 2: Pago de cuota ──
-      if(cuotaCLP > 0){
-        const currentEntries2 = lsLoad("ac_entries",[]);
-        const n2 = currentEntries2.length + 1;
-        const entryRows2=[];
-        if(capitalCLP>0) entryRows2.push({id:genId(),account:liabAccCode,debit:capitalCLP,credit:0});
-        if(interesCLP>0) entryRows2.push({id:genId(),account:"5240",debit:interesCLP,credit:0});
-        entryRows2.push({id:genId(),account:"1110",debit:0,credit:cuotaCLP});
-
-        const e2={
-          id:genId(), number:n2, date:row.date,
-          description:`Pago cuota ${row.period}/${liability.months} — ${liability.name}`,
-          reference:"Auto-Pasivos",
-          rows:entryRows2,
-          totalDebit:cuotaCLP, totalCredit:cuotaCLP,
+      if(reajCLP !== 0){
+        const abs = Math.abs(reajCLP);
+        const n = curEntries.length+1;
+        const reajRows = reajCLP > 0
+          ? [ // UF subió → gasto reajuste + aumenta pasivo reajuste
+              {id:genId(),account:"5241",      debit:abs, credit:0,   counterparty:liability.lender||""},
+              {id:genId(),account:reajAccCode, debit:0,   credit:abs, counterparty:liability.lender||""},
+            ]
+          : [ // UF bajó (deflación) → ingreso reajuste + baja pasivo
+              {id:genId(),account:reajAccCode, debit:abs, credit:0,   counterparty:liability.lender||""},
+              {id:genId(),account:"4300",      debit:0,   credit:abs, counterparty:liability.lender||""},
+            ];
+        const eA={
+          id:genId(), number:n, date:row.date,
+          description:`Reajuste UF período ${row.period} — ${liability.name} (${fmtNum(saldoUF,2)} UF × ΔUF ${fmtNum(varUF,2)})`,
+          reference:"Auto-Reajuste-UF",
+          rows:reajRows, totalDebit:abs, totalCredit:abs,
           createdAt:new Date().toISOString()
         };
-        const updated2=[...currentEntries2,e2];
-        setEntries(updated2);
-        await dbUpsertEntry(userId, entityId, e2, updated2);
-        setMsg({ok:true,text:`Cuota ${row.period} pagada. ${isUF?"Asientos de reajuste y pago generados.":"Asiento de pago generado."}`});
-        setTimeout(()=>setMsg(null),5000);
+        curEntries=[...curEntries,eA];
+        setEntries(curEntries);
+        await dbUpsertEntry(userId,entityId,eA,curEntries);
       }
+    }
+
+    // ── Asiento B: Pago de cuota (capital + interés → caja) ──
+    const capitalCLP = toCLP(row.capital);
+    const interesCLP = toCLP(row.interest);
+    const cuotaCLP   = capitalCLP + interesCLP;
+
+    if(cuotaCLP > 0){
+      curEntries = lsLoad(entriesKey, entries); // reload after asiento A
+      const n2 = curEntries.length+1;
+      const pagoRows=[];
+      // Para UF: el capital en CLP reduce el saldo 2400; el reajuste acumulado de 2440 también se paga
+      if(capitalCLP>0)  pagoRows.push({id:genId(),account:liabAccCode,   debit:capitalCLP, credit:0, counterparty:liability.lender||""});
+      if(isUF){
+        // Al pagar cuota UF: también extinguir el reajuste de 2440 acumulado proporcional
+        // Estimamos el saldo 2440 para este acreedor desde los asientos
+        const saldo2440 = entries.filter(e=>e.reference==="Auto-Reajuste-UF")
+          .flatMap(e=>e.rows)
+          .filter(r=>r.account===reajAccCode && (r.counterparty===liability.lender||""))
+          .reduce((s,r)=>(r.credit||0)-(r.debit||0)+s, 0);
+        // Solo incluir si hay saldo positivo
+        if(saldo2440>0){
+          const reajProp = Math.round(saldo2440 * (row.capital / (liability.originalAmount||1)));
+          if(reajProp>0) pagoRows.push({id:genId(),account:reajAccCode,debit:reajProp,credit:0,counterparty:liability.lender||""});
+        }
+      }
+      if(interesCLP>0)  pagoRows.push({id:genId(),account:interesAccCode,debit:interesCLP, credit:0, counterparty:liability.lender||""});
+      const totPago = pagoRows.reduce((s,r)=>s+r.debit,0);
+      pagoRows.push({id:genId(),account:cajAcc,debit:0,credit:totPago,counterparty:liability.lender||""});
+
+      const eB={
+        id:genId(), number:n2, date:row.date,
+        description:`Pago cuota ${row.period}/${liability.months} — ${liability.name}`,
+        reference:"Auto-Pago-Cuota",
+        rows:pagoRows, totalDebit:totPago, totalCredit:totPago,
+        createdAt:new Date().toISOString()
+      };
+      curEntries=[...curEntries,eB];
+      setEntries(curEntries);
+      await dbUpsertEntry(userId,entityId,eB,curEntries);
+      setMsg({ok:true,text:`✓ Cuota ${row.period} pagada.${isUF?" Asientos de reajuste UF y pago generados.":""}`});
+      setTimeout(()=>setMsg(null),6000);
     }
   }
   const totalDebtCLP=useMemo(()=>liabilities.reduce((s,l)=>{const pending=(l.amortTable||[]).filter(r=>!r.paid).reduce((a,r)=>a+r.capital,0); return s+toCLP(pending,l.currency,rates);},0),[liabilities,rates]);
